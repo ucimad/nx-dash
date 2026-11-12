@@ -165,6 +165,14 @@ namespace ul::menu::ui {
             std::map<std::string, s32> shelf_cat_pos;
             double shelf_vy = 0.0;
             double shelf_press = 0.0;
+
+            // ---- NX Dash: ambient light from the focused cover ----
+            SDL_Texture *amb_cur = nullptr;
+            SDL_Texture *amb_prev = nullptr;
+            double amb_fade = 1.0;
+            s32 amb_idx = -2;
+            std::string amb_path;
+            bool amb_failed = false;
             bool shelf_held = false;
             std::vector<pu::sdl2::Texture> shelf_tab_texts;
             std::vector<std::string> shelf_tab_names;
@@ -327,6 +335,7 @@ namespace ul::menu::ui {
             }
 
             void RenderOverlay(pu::ui::render::Renderer::Ref &drawer);
+            void RenderBackdrop(pu::ui::render::Renderer::Ref &drawer);
 
             inline bool IsMenuStart() {
                 return this->base_entry_idx_x == 0;
@@ -403,6 +412,25 @@ namespace ul::menu::ui {
             inline s32 GetHeight() override { return pu::ui::render::ScreenHeight; }
             void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) override {
                 this->menu->RenderOverlay(drawer);
+            }
+            void OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) override {}
+    };
+
+    // Draws the ambient light behind everything else (the entry menu is created later, hence the pointer)
+    class EntryMenuBackdrop : public pu::ui::elm::Element {
+        private:
+            EntryMenu::Ref *menu;
+        public:
+            EntryMenuBackdrop(EntryMenu::Ref *menu) : menu(menu) {}
+            PU_SMART_CTOR(EntryMenuBackdrop)
+            inline s32 GetX() override { return 0; }
+            inline s32 GetY() override { return 0; }
+            inline s32 GetWidth() override { return pu::ui::render::ScreenWidth; }
+            inline s32 GetHeight() override { return pu::ui::render::ScreenHeight; }
+            void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) override {
+                if((this->menu != nullptr) && (*this->menu != nullptr)) {
+                    (*this->menu)->RenderBackdrop(drawer);
+                }
             }
             void OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) override {}
     };

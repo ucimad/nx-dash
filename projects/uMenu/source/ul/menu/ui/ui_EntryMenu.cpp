@@ -872,6 +872,17 @@ namespace ul::menu::ui {
         constexpr pu::ui::Color ShelfLabelColor = { 0xF4, 0xF2, 0xEE, 0xFF };
         constexpr pu::ui::Color ShelfTitleColor = { 0x14, 0x14, 0x14, 0xFF };
 
+        // Fake "liquid glass" (no realtime blur here): bright rim, tinted body, specular line on top
+        inline void RenderGlass(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y, const s32 w, const s32 h, const s32 r, const double k, const u8 body_alpha) {
+            const auto a = [&](const double v) { return (u8)std::clamp(v * k, 0.0, 255.0); };
+            drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, a(64.0) }, x - 1, y - 1, w + 2, h + 2, r + 1);
+            drawer->RenderRoundedRectangleFill({ 0x14, 0x16, 0x1E, a((double)body_alpha) }, x, y, w, h, r);
+            drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, a(16.0) }, x, y, w, h, r);
+            if(w > 2 * r + 8) {
+                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, a(70.0) }, x + r, y + 1, w - 2 * r, 1);
+            }
+        }
+
         // Below this many games the shelf is a plain row (looping 2-3 cases looks broken)
         constexpr s32 ShelfLoopMin = 7;
 
@@ -1383,11 +1394,16 @@ namespace ul::menu::ui {
             // Focus ring
             if(o > 0.6) {
                 const auto ring = (u8)(255.0 * (o - 0.6) / 0.4);
-                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, ring }, (s32)ex - 5, (s32)ey - 5, (s32)case_w + 10, (s32)case_h + 10, radius + 4);
+                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(ring * 0.10) }, (s32)ex - 14, (s32)ey - 14, (s32)case_w + 28, (s32)case_h + 28, radius + 13);
+                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(ring * 0.16) }, (s32)ex - 8, (s32)ey - 8, (s32)case_w + 16, (s32)case_h + 16, radius + 7);
+                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(ring * 0.92) }, (s32)ex - 2, (s32)ey - 2, (s32)case_w + 4, (s32)case_h + 4, radius + 2);
             }
 
             // Case body
             drawer->RenderRoundedRectangleFill(ShelfCaseColor, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
+            if(case_w > 2.0 * radius + 4.0) {
+                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, 0x5A }, (s32)ex + radius, (s32)ey + 1, (s32)case_w - 2 * radius, 1);
+            }
 
             if(o > 0.35) {
                 // Cover: the icon as key art inside the case frame
@@ -1553,12 +1569,18 @@ namespace ul::menu::ui {
             s32 tx = left - shift;
             const auto ty = y + 18;
             const auto th = 56;
+            {
+                const auto cap_x = std::max(tx - 8, x + 60);
+                const auto cap_r = std::min(tx + total - 14 + 8, x + (s32)area_w - 60);
+                RenderGlass(drawer, cap_x, ty - 8, cap_r - cap_x, th + 16, (th + 16) / 2, 1.0, 120);
+            }
             for(u32 i = 0; i < this->shelf_cats.size(); i++) {
                 const auto w = widths.at(i);
                 const auto is_cur = (s32)i == this->shelf_cat;
                 if((tx + w > x) && (tx < x + (s32)area_w)) {
                     if(is_cur) {
-                        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, 0x34 }, tx, ty, w, th, th / 2);
+                        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, 0x3C }, tx, ty, w, th, th / 2);
+                        drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, 0x50 }, tx + th / 2, ty + 1, w - th, 1);
                     }
                     else {
                         // Quiet: no chip for the rest, just dimmer text
@@ -1806,7 +1828,7 @@ namespace ul::menu::ui {
         const s32 sw = pu::ui::render::ScreenWidth;
         const s32 sh = pu::ui::render::ScreenHeight;
 
-        drawer->RenderRectangleFill({ 0x0E, 0x04, 0x06, alpha(225.0) }, 0, 0, sw, sh);
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, alpha(200.0) }, 0, 0, sw, sh);
 
         // Glass panel
         const auto pop = 0.95 + 0.05 * a;
@@ -1814,8 +1836,7 @@ namespace ul::menu::ui {
         const s32 ph = (s32)(780.0 * pop);
         const s32 px = (sw - pw) / 2;
         const s32 py = (sh - ph) / 2;
-        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(34.0) }, px - 2, py - 2, pw + 4, ph + 4, 30);
-        drawer->RenderRoundedRectangleFill({ 0x22, 0x0E, 0x12, alpha(244.0) }, px, py, pw, ph, 28);
+        RenderGlass(drawer, px, py, pw, ph, 36, a, 205);
 
         // Game capture: zooms from full screen into the thumbnail
         const double tw = 960.0;
@@ -1826,13 +1847,13 @@ namespace ul::menu::ui {
         const auto ry = ty * a;
         const auto rw = sw + (tw - sw) * a;
         const auto rh = sh + (th - sh) * a;
-        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(255.0) }, (s32)rx - 5, (s32)ry - 5, (s32)rw + 10, (s32)rh + 10, 14);
+        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(90.0) }, (s32)rx - 2, (s32)ry - 2, (s32)rw + 4, (s32)rh + 4, 10);
         auto capture = GetScreenCaptureBackground()->GetTexture();
         if(capture != nullptr) {
             drawer->RenderTexture(capture, (s32)rx, (s32)ry, pu::ui::render::TextureRenderOptions(0xFF, (s32)rw, (s32)rh, {}, {}, {}));
         }
         else {
-            drawer->RenderRectangleFill({ 0x3A, 0x14, 0x18, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
+            drawer->RenderRectangleFill({ 0x1C, 0x1E, 0x28, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
         }
         RenderTextFit(drawer, this->sheet_hint, tx, (s32)(ty + th + 44.0), tw, alpha(150.0), false);
 
@@ -1864,6 +1885,67 @@ namespace ul::menu::ui {
             this->sheet_hits.insert(this->sheet_hits.begin(), { (s32)i, (s32)cx0, oy, (s32)colw, row_h });
             oy += row_h + row_gap;
         }
+    }
+
+    // ---- Ambient light: the focused cover, blurred down to a wash of color behind the glass ----
+
+    void EntryMenu::RenderBackdrop(pu::ui::render::Renderer::Ref &drawer) {
+        if(!ShelfMode || this->amb_failed) {
+            return;
+        }
+
+        auto renderer = pu::ui::render::GetMainRenderer();
+        const auto has_focus = !this->shelf_valid.empty() && (this->cur_entry_idx < this->entry_icons.size());
+        if(has_focus && (((s32)this->cur_entry_idx != this->amb_idx) || (this->cur_path != this->amb_path))) {
+            auto icon = this->entry_icons.at(this->cur_entry_idx);
+            if((icon != nullptr) && (icon->Get() != nullptr)) {
+                // 256px icon -> 32x18: the downscale is the blur, the upscale smooths it
+                auto tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 32, 18);
+                if((tex == nullptr) || (SDL_SetRenderTarget(renderer, tex) != 0)) {
+                    if(tex != nullptr) {
+                        SDL_DestroyTexture(tex);
+                    }
+                    SDL_SetRenderTarget(renderer, nullptr);
+                    this->amb_failed = true;
+                    return;
+                }
+                SDL_SetTextureAlphaMod(icon->Get(), 0xFF);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF);
+                SDL_RenderClear(renderer);
+                SDL_RenderCopy(renderer, icon->Get(), nullptr, nullptr);
+                SDL_SetRenderTarget(renderer, nullptr);
+                SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+
+                if(this->amb_prev != nullptr) {
+                    SDL_DestroyTexture(this->amb_prev);
+                }
+                this->amb_prev = this->amb_cur;
+                this->amb_cur = tex;
+                this->amb_fade = 0.0;
+                this->amb_idx = this->cur_entry_idx;
+                this->amb_path = this->cur_path;
+            }
+        }
+
+        this->amb_fade = std::min(1.0, this->amb_fade + 0.045);
+        const auto f = SmoothStep(this->amb_fade);
+        const double strength = 118.0;
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+        // Oversized so the soft edges of the tiny texture stay off screen
+        const s32 ox = -sw / 8;
+        const s32 oy = -sh / 8;
+        const s32 ow = sw + sw / 4;
+        const s32 oh = sh + sh / 4;
+        if((this->amb_prev != nullptr) && (f < 1.0)) {
+            drawer->RenderTexture(this->amb_prev, ox, oy, pu::ui::render::TextureRenderOptions((u8)(strength * (1.0 - f)), ow, oh, {}, {}, {}));
+        }
+        if(this->amb_cur != nullptr) {
+            drawer->RenderTexture(this->amb_cur, ox, oy, pu::ui::render::TextureRenderOptions((u8)(strength * f), ow, oh, {}, {}, {}));
+        }
+        // Keep the top and bottom calm so the bars and text stay readable
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, 0x50 }, 0, 0, sw, 150);
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, 0x66 }, 0, sh - 260, sw, 260);
     }
 
 }

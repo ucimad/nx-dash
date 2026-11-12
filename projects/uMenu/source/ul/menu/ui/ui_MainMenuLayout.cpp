@@ -693,6 +693,8 @@ namespace ul::menu::ui {
         this->menu_decrement_sfx = nullptr;
 
         // Load banners first
+        this->Add(EntryMenuBackdrop::New(&this->entry_menu));
+
         this->top_menu_default_bg = pu::ui::elm::Image::New(0, 0, TryFindLoadImageHandle("ui/Main/TopMenuBackground/Default"));
         this->top_menu_folder_bg = pu::ui::elm::Image::New(0, 0, TryFindLoadImageHandle("ui/Main/TopMenuBackground/Folder"));
         this->top_menu_app_bg = pu::ui::elm::Image::New(0, 0, TryFindLoadImageHandle("ui/Main/TopMenuBackground/Application"));
