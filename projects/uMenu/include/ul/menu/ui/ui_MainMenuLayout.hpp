@@ -138,6 +138,9 @@ namespace ul::menu::ui {
 
             void MoveTo(const std::string &new_path, const bool fade, std::function<void()> action = nullptr);
 
+            void ShelfMoveEntryToCategory(Entry &entry);
+            void ShelfNewCategoryWithEntry(Entry &entry);
+
             inline void MoveToRoot(const bool fade, std::function<void()> action = nullptr) {
                 this->cur_folder_path = "";
                 this->cur_path_text->SetText(this->cur_folder_path);

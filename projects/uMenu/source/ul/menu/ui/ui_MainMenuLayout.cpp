@@ -445,13 +445,17 @@ namespace ul::menu::ui {
                             app_take_over_opt = cur_option_idx; cur_option_idx++;
                         }
 
+                        // NX Dash: shelves are categories (top-level folders)
+                        options.push_back("Mover a categoría...");
+                        const s32 move_cat_opt = cur_option_idx; cur_option_idx++;
+                        options.push_back("Nueva categoría con este juego...");
+                        const s32 new_cat_opt = cur_option_idx; cur_option_idx++;
+
                         const auto has_non_root_opts = !this->entry_menu->IsInRoot();
                         s32 entry_move_parent_opt = -1;
                         s32 entry_move_root_opt = -1;
                         if(has_non_root_opts) {
-                            options.push_back(GetLanguageString("entry_move_parent"));
-                            entry_move_parent_opt = cur_option_idx; cur_option_idx++;
-                            options.push_back(GetLanguageString("entry_move_root"));
+                            options.push_back("Quitar de la categoría");
                             entry_move_root_opt = cur_option_idx; cur_option_idx++;
                         }
 
@@ -464,6 +468,12 @@ namespace ul::menu::ui {
                                 g_GlobalSettings.SetHomebrewTakeoverApplicationId(cur_entry.app_info.record.id);
                                 g_MenuApplication->ShowNotification(GetLanguageString("app_take_over_done"));
                             }
+                        }
+                        if(option == move_cat_opt) {
+                            this->ShelfMoveEntryToCategory(cur_entry);
+                        }
+                        else if(option == new_cat_opt) {
+                            this->ShelfNewCategoryWithEntry(cur_entry);
                         }
                         if(has_non_root_opts && (option == entry_move_parent_opt)) {
                             this->MoveEntryToParentFolder(cur_entry);
@@ -767,9 +777,39 @@ namespace ul::menu::ui {
             pu::audio::PlaySfx(this->cursor_move_sfx);
         });
         g_GlobalSettings.ApplyConfigForElement("main_menu", "entry_menu", this->entry_menu);
+        this->entry_menu->SetNxDashCallbacks([&](const EntryMenu::SheetAction action) {
+            switch(action) {
+                case EntryMenu::SheetAction::Resume: {
+                    this->StartResume();
+                    break;
+                }
+                case EntryMenu::SheetAction::Close: {
+                    this->HandleCloseSuspended();
+                    break;
+                }
+                case EntryMenu::SheetAction::Album: {
+                    pu::audio::PlaySfx(this->open_album_sfx);
+                    ShowAlbum();
+                    break;
+                }
+                default:
+                    break;
+            }
+        }, [&](const std::string &fs_path, const std::string &name) {
+            if(name.empty()) {
+                this->MoveToRoot(false);
+            }
+            else {
+                this->cur_folder_path = "";
+                this->PushFolder(name);
+                this->cur_path_text->SetText(this->cur_folder_path);
+                this->MoveTo(fs_path, false);
+            }
+        });
         this->Add(this->entry_menu);
 
         this->Add(GetScreenCaptureBackground());
+        this->Add(EntryMenuOverlay::New(this->entry_menu));
 
         this->quick_menu = QuickMenu::New();
         this->Add(this->quick_menu);
@@ -1055,6 +1095,7 @@ namespace ul::menu::ui {
         pu::audio::PlaySfx(this->home_press_sfx);
 
         if(g_GlobalSettings.IsSuspended()) {
+            this->entry_menu->CloseSheetForResume();
             this->StartResume();
         }
         else {
@@ -1166,6 +1207,69 @@ namespace ul::menu::ui {
         g_GlobalSettings.ResetSuspendedApplication();
 
         RequestHideScreenCaptureBackground();
+    }
+
+    void MainMenuLayout::ShelfMoveEntryToCategory(Entry &entry) {
+        std::vector<Entry> folders;
+        for(const auto &root_entry : LoadEntries(GetActiveMenuPath())) {
+            if(root_entry.Is<EntryType::Folder>() && (root_entry.GetFolderPath() != this->entry_menu->GetPath())) {
+                folders.push_back(root_entry);
+            }
+        }
+        if(folders.empty()) {
+            g_MenuApplication->ShowNotification("Todavía no hay categorías: elegí \"Nueva categoría\"");
+            return;
+        }
+        // Dialogs only fit a handful of options
+        if(folders.size() > 6) {
+            folders.resize(6);
+        }
+
+        std::vector<std::string> options;
+        for(const auto &folder : folders) {
+            options.push_back(folder.folder_info.name);
+        }
+        options.push_back(GetLanguageString("cancel"));
+        const auto option = g_MenuApplication->DisplayDialog("Mover a categoría", "¿A qué estante va este juego?", options, true);
+        if((option >= 0) && (option < (s32)folders.size())) {
+            Entry entry_copy(entry);
+            entry_copy.MoveTo(folders.at(option).GetFolderPath());
+            pu::audio::PlaySfx(this->entry_move_into_sfx);
+            this->entry_menu->NotifyEntryRemoved(entry);
+            this->entry_menu->OrganizeUpdateEntries();
+            g_MenuApplication->ShowNotification("Movido a " + std::string(folders.at(option).folder_info.name));
+        }
+    }
+
+    void MainMenuLayout::ShelfNewCategoryWithEntry(Entry &entry) {
+        SwkbdConfig swkbd;
+        UL_RC_ASSERT(swkbdCreate(&swkbd, 0));
+        swkbdConfigMakePresetDefault(&swkbd);
+        swkbdConfigSetType(&swkbd, SwkbdType_All);
+        swkbdConfigSetGuideText(&swkbd, "Nombre de la categoría");
+        char name_buf[500] = {};
+        const auto rc = ShowSwkbd(&swkbd, name_buf, sizeof(name_buf));
+        swkbdClose(&swkbd);
+
+        std::string name(name_buf);
+        while(!name.empty() && (name.at(0) == ' ')) {
+            name.erase(name.begin());
+        }
+        if(R_FAILED(rc) || name.empty()) {
+            return;
+        }
+
+        pu::audio::PlaySfx(this->create_folder_sfx);
+        const auto folder_entry = CreateFolderEntry(GetActiveMenuPath(), name);
+        if(this->entry_menu->IsInRoot()) {
+            this->entry_menu->NotifyEntryAdded(folder_entry);
+        }
+
+        Entry entry_copy(entry);
+        entry_copy.MoveTo(folder_entry.GetFolderPath());
+        this->entry_menu->NotifyEntryRemoved(entry);
+        this->entry_menu->OrganizeUpdateEntries();
+        g_MenuApplication->ShowNotification("Categoría \"" + name + "\" creada");
     }
 
 }

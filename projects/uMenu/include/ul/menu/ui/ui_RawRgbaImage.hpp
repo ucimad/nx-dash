@@ -24,6 +24,10 @@ namespace ul::menu::ui {
             void ClearImage();
             void LoadImage(const u8 *rgba_data, const s32 data_w, const s32 data_h, const u32 pix_num);
 
+            inline pu::sdl2::Texture GetTexture() {
+                return this->img_tex;
+            }
+
             inline bool HasImage() {
                 return this->img_tex != nullptr;
             }

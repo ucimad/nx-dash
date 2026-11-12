@@ -4,6 +4,7 @@
 #include <ul/ul_Result.hpp>
 #include <ul/util/util_Enum.hpp>
 #include <pu/Plutonium>
+#include <map>
 
 namespace ul::menu::ui {
 
@@ -41,6 +42,11 @@ namespace ul::menu::ui {
             using FocusedEntryInputPressedCallback = std::function<void(const u64)>;
             using FocusedEntryChangedCallback = std::function<void(const bool, const bool, const bool)>;
             using FocusedEntryChangeStartedCallback = std::function<void()>;
+
+            // NX Dash callbacks into the main layout
+            enum class SheetAction : u32 { Resume = 0, Close = 1, Album = 2, Library = 3 };
+            using SheetActionCallback = std::function<void(const SheetAction)>;
+            using ShelfFolderCallback = std::function<void(const std::string&, const std::string&)>;
 
         private:
             s32 x;
@@ -87,6 +93,8 @@ namespace ul::menu::ui {
             FocusedEntryInputPressedCallback cur_entry_input_cb;
             FocusedEntryChangedCallback cur_entry_changed_cb;
             FocusedEntryChangeStartedCallback cur_entry_change_started_cb;
+            SheetActionCallback sheet_action_cb;
+            ShelfFolderCallback shelf_folder_cb;
             bool enabled;
             s32 selected_entry_idx;
             pu::sdl2::TextureHandle::Ref empty_entry_icon;
@@ -137,6 +145,62 @@ namespace ul::menu::ui {
             s32 shelf_touch_last_y = 0;
             s32 shelf_touch_applied = 0;
             void ShelfMoveToPos(const s32 pos);
+
+            // ---- NX Dash: category shelves (Up/Down) ----
+            enum class ShelfFilter : u32 { Games, Folder, Homebrew, System };
+            struct ShelfCategory {
+                std::string name;
+                std::string path;
+                ShelfFilter filter;
+            };
+            std::vector<ShelfCategory> shelf_cats;
+            std::string shelf_cats_sig;
+            bool shelf_root_loaded = false;
+            bool shelf_restore_pending = false;
+            s32 shelf_cat = 0;
+            ShelfFilter shelf_root_filter = ShelfFilter::Games;
+            std::vector<std::pair<std::string, std::string>> shelf_root_folders;
+            bool shelf_root_has_hb = false;
+            bool shelf_root_has_special = false;
+            std::map<std::string, s32> shelf_cat_pos;
+            double shelf_vy = 0.0;
+            std::vector<pu::sdl2::Texture> shelf_tab_texts;
+            std::vector<std::string> shelf_tab_names;
+            std::vector<ShelfHit> shelf_tab_hits;
+            pu::sdl2::Texture shelf_empty_text = nullptr;
+            void ShelfRebuildCategories();
+            bool ShelfEntryMatches(const Entry &entry);
+            void ShelfSwitchCategory(const s32 dir);
+            void ShelfGoToCategory(const s32 idx);
+            std::string ShelfCatKey();
+
+            // ---- NX Dash: focused game info under the shelf ----
+            s32 shelf_info_idx = -1;
+            std::string shelf_info_path;
+            pu::sdl2::Texture shelf_info_title = nullptr;
+            pu::sdl2::Texture shelf_info_meta = nullptr;
+            void ShelfClearInfo();
+            void ShelfRenderInfo(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y);
+
+            // ---- NX Dash: HOME game sheet ----
+            bool sheet_checked = false;
+            bool sheet_open = false;
+            double sheet_anim = 0.0;
+            s32 sheet_sel = 0;
+            std::vector<u32> sheet_actions;
+            std::vector<pu::sdl2::Texture> sheet_opt_texts;
+            pu::sdl2::Texture sheet_title = nullptr;
+            pu::sdl2::Texture sheet_meta = nullptr;
+            pu::sdl2::Texture sheet_badge = nullptr;
+            pu::sdl2::Texture sheet_hint = nullptr;
+            std::vector<ShelfHit> sheet_hits;
+            bool sheet_touching = false;
+            s32 sheet_touch_x = 0;
+            s32 sheet_touch_y = 0;
+            void SheetOpen();
+            void SheetFree();
+            void SheetInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
+            void SheetExecute(const u32 action);
 
             inline bool IsNotInSwipe() {
                 return this->swipe_mode == SwipeMode::None;
@@ -246,6 +310,22 @@ namespace ul::menu::ui {
 
             bool IsInRoot();
 
+            inline void SetNxDashCallbacks(SheetActionCallback sheet_cb, ShelfFolderCallback folder_cb) {
+                this->sheet_action_cb = sheet_cb;
+                this->shelf_folder_cb = folder_cb;
+            }
+
+            inline bool IsSheetOpen() {
+                return this->sheet_open;
+            }
+
+            inline void CloseSheetForResume() {
+                this->sheet_open = false;
+                this->sheet_anim = 0.0;
+            }
+
+            void RenderOverlay(pu::ui::render::Renderer::Ref &drawer);
+
             inline bool IsMenuStart() {
                 return this->base_entry_idx_x == 0;
             }
@@ -305,6 +385,24 @@ namespace ul::menu::ui {
             inline bool IsFocusedEntrySelected() {
                 return this->IsEntrySelected(this->cur_entry_idx);
             }
+    };
+
+
+    // Draws the HOME game sheet above the screen capture background
+    class EntryMenuOverlay : public pu::ui::elm::Element {
+        private:
+            EntryMenu::Ref menu;
+        public:
+            EntryMenuOverlay(EntryMenu::Ref menu) : menu(menu) {}
+            PU_SMART_CTOR(EntryMenuOverlay)
+            inline s32 GetX() override { return 0; }
+            inline s32 GetY() override { return 0; }
+            inline s32 GetWidth() override { return pu::ui::render::ScreenWidth; }
+            inline s32 GetHeight() override { return pu::ui::render::ScreenHeight; }
+            void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) override {
+                this->menu->RenderOverlay(drawer);
+            }
+            void OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) override {}
     };
 
 }

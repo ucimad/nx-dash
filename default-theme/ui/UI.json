@@ -48,14 +48,14 @@
         },
         "cur_path_text": {
             "y": 36,
-            "h_align": "center",
             "font_size": "small",
             "clamp_width": 700,
             "clamp_speed": 3,
-            "clamp_delay": 50
+            "clamp_delay": 50,
+            "x": 4000
         },
         "cur_entry_main_text": {
-            "x": 110,
+            "x": 4000,
             "y": 68,
             "font_size": "large",
             "clamp_width": 1130,
@@ -63,7 +63,7 @@
             "clamp_delay": 50
         },
         "cur_entry_sub_text": {
-            "x": 110,
+            "x": 4000,
             "y": 120,
             "font_size": "medium",
             "clamp_width": 1130,

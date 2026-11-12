@@ -887,9 +887,11 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::ShelfRebuildValid() {
+        this->ShelfRebuildCategories();
+
         this->shelf_valid.clear();
         for(u32 i = 0; i < this->cur_entries.size(); i++) {
-            if(!this->cur_entries.at(i).Is<EntryType::Invalid>()) {
+            if(this->ShelfEntryMatches(this->cur_entries.at(i))) {
                 this->shelf_valid.push_back(i);
             }
         }
@@ -899,26 +901,207 @@ namespace ul::menu::ui {
             this->shelf_title_texts.resize(this->cur_entries.size(), nullptr);
         }
 
-        // Keep the shelf position in sync with the real focused entry (e.g. after MoveTo / folder changes)
+        // Keep the shelf position in sync with the real focused entry (e.g. after MoveTo / category changes)
         const auto nv = (s32)this->shelf_valid.size();
         if(nv > 0) {
             const auto cur_pos = ((this->shelf_target % nv) + nv) % nv;
-            if(!this->shelf_synced || (this->shelf_valid.at(cur_pos) != this->cur_entry_idx)) {
-                s32 found = 0;
-                for(s32 i = 0; i < nv; i++) {
-                    if(this->shelf_valid.at(i) == this->cur_entry_idx) {
-                        found = i;
-                        break;
+            if(this->shelf_restore_pending || !this->shelf_synced || (this->shelf_valid.at(cur_pos) != this->cur_entry_idx)) {
+                s32 found = -1;
+                if(this->shelf_restore_pending) {
+                    const auto it = this->shelf_cat_pos.find(this->ShelfCatKey());
+                    found = (it != this->shelf_cat_pos.end()) ? std::clamp(it->second, 0, nv - 1) : 0;
+                }
+                else {
+                    for(s32 i = 0; i < nv; i++) {
+                        if(this->shelf_valid.at(i) == this->cur_entry_idx) {
+                            found = i;
+                            break;
+                        }
                     }
                 }
+                if(found < 0) {
+                    found = 0;
+                }
+                this->shelf_restore_pending = false;
                 this->shelf_target = found;
                 this->shelf_s = (double)found;
                 this->shelf_synced = true;
                 if(this->shelf_valid.at(found) != this->cur_entry_idx) {
+                    const auto prev_idx = (s32)this->cur_entry_idx;
                     this->SetFocusedEntryIndex(this->shelf_valid.at(found));
+                    this->NotifyFocusedEntryChanged(prev_idx);
                 }
             }
         }
+        else {
+            this->shelf_restore_pending = false;
+        }
+    }
+
+    std::string EntryMenu::ShelfCatKey() {
+        return this->cur_path + "#" + std::to_string(static_cast<u32>(this->IsInRoot() ? this->shelf_root_filter : ShelfFilter::Folder));
+    }
+
+    bool EntryMenu::ShelfEntryMatches(const Entry &entry) {
+        if(entry.Is<EntryType::Invalid>() || entry.Is<EntryType::Folder>()) {
+            return false;
+        }
+        if(!this->IsInRoot()) {
+            return true;
+        }
+        switch(this->shelf_root_filter) {
+            case ShelfFilter::Games:
+                return entry.Is<EntryType::Application>();
+            case ShelfFilter::Homebrew:
+                return entry.Is<EntryType::Homebrew>();
+            case ShelfFilter::System:
+                return entry.IsSpecial();
+            default:
+                return false;
+        }
+    }
+
+    void EntryMenu::ShelfRebuildCategories() {
+        const auto sig = this->cur_path + ":" + std::to_string(this->cur_entries.size());
+        if(sig == this->shelf_cats_sig) {
+            return;
+        }
+        this->shelf_cats_sig = sig;
+
+        const auto &root = GetActiveMenuPath();
+        std::vector<Entry> loaded;
+        const std::vector<Entry> *root_entries = nullptr;
+        if(this->IsInRoot()) {
+            root_entries = &this->cur_entries;
+        }
+        else if(!this->shelf_root_loaded) {
+            loaded = LoadEntries(root);
+            root_entries = &loaded;
+        }
+        if(root_entries != nullptr) {
+            this->shelf_root_loaded = true;
+            this->shelf_root_folders.clear();
+            this->shelf_root_has_hb = false;
+            this->shelf_root_has_special = false;
+            for(const auto &entry : *root_entries) {
+                if(entry.Is<EntryType::Folder>()) {
+                    this->shelf_root_folders.push_back({ entry.folder_info.name, entry.GetFolderPath() });
+                }
+                else if(entry.Is<EntryType::Homebrew>()) {
+                    this->shelf_root_has_hb = true;
+                }
+                else if(entry.IsSpecial()) {
+                    this->shelf_root_has_special = true;
+                }
+            }
+        }
+
+        this->shelf_cats.clear();
+        this->shelf_cats.push_back({ "Juegos", root, ShelfFilter::Games });
+        for(const auto &[name, path] : this->shelf_root_folders) {
+            this->shelf_cats.push_back({ name, path, ShelfFilter::Folder });
+        }
+        if(this->shelf_root_has_hb) {
+            this->shelf_cats.push_back({ "Homebrew", root, ShelfFilter::Homebrew });
+        }
+        if(this->shelf_root_has_special) {
+            this->shelf_cats.push_back({ "Sistema", root, ShelfFilter::System });
+        }
+
+        if(this->IsInRoot()) {
+            if((this->shelf_root_filter == ShelfFilter::Homebrew) && !this->shelf_root_has_hb) {
+                this->shelf_root_filter = ShelfFilter::Games;
+            }
+            if((this->shelf_root_filter == ShelfFilter::System) && !this->shelf_root_has_special) {
+                this->shelf_root_filter = ShelfFilter::Games;
+            }
+            if(this->shelf_root_filter == ShelfFilter::Folder) {
+                this->shelf_root_filter = ShelfFilter::Games;
+            }
+        }
+
+        // Which category are we in right now?
+        this->shelf_cat = -1;
+        for(u32 i = 0; i < this->shelf_cats.size(); i++) {
+            const auto &cat = this->shelf_cats.at(i);
+            if(this->IsInRoot() ? ((cat.filter != ShelfFilter::Folder) && (cat.filter == this->shelf_root_filter)) : ((cat.filter == ShelfFilter::Folder) && (cat.path == this->cur_path))) {
+                this->shelf_cat = i;
+                break;
+            }
+        }
+        if(this->shelf_cat < 0) {
+            // A nested folder (not a top-level category): show it as its own tab
+            this->shelf_cats.push_back({ fs::GetFileName(this->cur_path), this->cur_path, ShelfFilter::Folder });
+            this->shelf_cat = this->shelf_cats.size() - 1;
+        }
+
+        std::vector<std::string> names;
+        for(const auto &cat : this->shelf_cats) {
+            names.push_back(cat.name);
+        }
+        if(names != this->shelf_tab_names) {
+            for(auto &tex : this->shelf_tab_texts) {
+                pu::ui::render::DeleteTexture(tex);
+            }
+            this->shelf_tab_texts.assign(names.size(), nullptr);
+            this->shelf_tab_names = names;
+        }
+    }
+
+    void EntryMenu::ShelfGoToCategory(const s32 idx_raw) {
+        const auto n = (s32)this->shelf_cats.size();
+        if(n <= 1) {
+            return;
+        }
+        const auto idx = ((idx_raw % n) + n) % n;
+        if(idx == this->shelf_cat) {
+            return;
+        }
+
+        // Remember where we were on this shelf
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv > 0) {
+            this->shelf_cat_pos[this->ShelfCatKey()] = ((this->shelf_target % nv) + nv) % nv;
+        }
+
+        const auto cat = this->shelf_cats.at(idx);
+        this->shelf_vy = (idx_raw > this->shelf_cat) ? 1.0 : -1.0;
+        this->cur_entry_change_started_cb();
+
+        while(!this->entry_idx_stack.empty()) {
+            this->entry_idx_stack.pop();
+        }
+
+        if(cat.filter != ShelfFilter::Folder) {
+            this->shelf_root_filter = cat.filter;
+            if(!this->IsInRoot()) {
+                if(this->shelf_folder_cb) {
+                    this->shelf_folder_cb(GetActiveMenuPath(), "");
+                }
+            }
+        }
+        else if(this->shelf_folder_cb) {
+            this->shelf_folder_cb(cat.path, cat.name);
+        }
+
+        this->shelf_cats_sig.clear();
+        this->shelf_synced = false;
+        this->shelf_restore_pending = true;
+        this->ShelfClearInfo();
+        this->ShelfRebuildValid();
+        this->NotifyFocusedEntryChanged(-1);
+    }
+
+    void EntryMenu::ShelfSwitchCategory(const s32 dir) {
+        this->ShelfGoToCategory(this->shelf_cat + dir);
+    }
+
+    void EntryMenu::ShelfClearInfo() {
+        pu::ui::render::DeleteTexture(this->shelf_info_title);
+        pu::ui::render::DeleteTexture(this->shelf_info_meta);
+        this->shelf_info_title = nullptr;
+        this->shelf_info_meta = nullptr;
+        this->shelf_info_idx = -1;
     }
 
     void EntryMenu::ShelfMove(const s32 dir) {
@@ -951,7 +1134,12 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::ShelfInput(const u64 keys_down, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
-        // ---- Touch: drag to scroll, tap a case to focus it, tap the focused case to open it ----
+        if(this->sheet_open) {
+            this->SheetInput(keys_down, touch_pos);
+            return;
+        }
+
+        // ---- Touch: drag to scroll, tap a case to focus it, tap the focused case to open it, tap a tab to switch shelf ----
         if(!touch_pos.IsEmpty()) {
             if(!this->shelf_touching) {
                 this->shelf_touching = true;
@@ -978,11 +1166,17 @@ namespace ul::menu::ui {
         else if(this->shelf_touching) {
             this->shelf_touching = false;
             if(!this->shelf_touch_moved) {
+                const auto tx = this->shelf_touch_last_x;
+                const auto ty = this->shelf_touch_last_y;
+                for(const auto &hit : this->shelf_tab_hits) {
+                    if((tx >= hit.x) && (tx < hit.x + hit.w) && (ty >= hit.y) && (ty < hit.y + hit.h)) {
+                        this->ShelfGoToCategory(hit.pos);
+                        return;
+                    }
+                }
                 // Tap: nearest case first (hits are stored far-to-near)
                 const auto nv = (s32)this->shelf_valid.size();
                 for(auto it = this->shelf_hits.rbegin(); it != this->shelf_hits.rend(); it++) {
-                    const auto tx = this->shelf_touch_last_x;
-                    const auto ty = this->shelf_touch_last_y;
                     if((tx >= it->x) && (tx < it->x + it->w) && (ty >= it->y) && (ty < it->y + it->h)) {
                         const auto cur = (nv > 0) ? (((this->shelf_target % nv) + nv) % nv) : -1;
                         if(it->pos == cur) {
@@ -998,12 +1192,19 @@ namespace ul::menu::ui {
             return;
         }
 
+        const auto nv = (s32)this->shelf_valid.size();
         const auto left_down = keys_down & HidNpadButton_Left;
         const auto right_down = keys_down & HidNpadButton_Right;
         const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
         const auto right_held = keys_held & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
+        const auto up_down = keys_down & (HidNpadButton_Up | HidNpadButton_StickLUp | HidNpadButton_StickRUp);
+        const auto down_down = keys_down & (HidNpadButton_Down | HidNpadButton_StickLDown | HidNpadButton_StickRDown);
 
-        if(left_down || right_down) {
+        if(up_down || down_down) {
+            this->ShelfSwitchCategory(up_down ? -1 : 1);
+            this->shelf_hold_frames = 0;
+        }
+        else if(left_down || right_down) {
             this->ShelfMove(left_down ? -1 : 1);
             this->shelf_hold_frames = 0;
         }
@@ -1022,8 +1223,13 @@ namespace ul::menu::ui {
         }
         else {
             this->shelf_hold_frames = 0;
-            if(!(keys_down & (HidNpadButton_Up | HidNpadButton_Down))) {
-                this->cur_entry_input_cb(keys_down);
+            auto fwd = keys_down & ~(u64)(HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_AnyUp | HidNpadButton_AnyDown);
+            if(nv == 0) {
+                // Empty shelf: the focused entry is not visible, so don't act on it
+                fwd &= ~(u64)(HidNpadButton_A | HidNpadButton_X | HidNpadButton_Y);
+            }
+            if(fwd) {
+                this->cur_entry_input_cb(fwd);
             }
         }
     }
@@ -1031,7 +1237,22 @@ namespace ul::menu::ui {
     void EntryMenu::ShelfRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
         this->ShelfRebuildValid();
         const auto nv = (s32)this->shelf_valid.size();
+
+        // Category change slide
+        this->shelf_vy *= 0.80;
+        if(std::abs(this->shelf_vy) < 0.002) {
+            this->shelf_vy = 0.0;
+        }
+
+        this->ShelfRenderInfo(drawer, x, y);
         if(nv == 0) {
+            if(this->shelf_empty_text == nullptr) {
+                this->shelf_empty_text = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), "No hay nada en esta categoría todavía", { 0xFF, 0xFF, 0xFF, 0xB0 });
+            }
+            const auto tw = pu::ui::render::GetTextureWidth(this->shelf_empty_text);
+            const auto th = pu::ui::render::GetTextureHeight(this->shelf_empty_text);
+            drawer->RenderTexture(this->shelf_empty_text, x + (this->GetWidth() - tw) / 2, y + (s32)(this->GetHeight() * 0.45) - th / 2 + (s32)(this->shelf_vy * 160.0));
+            this->shelf_hits.clear();
             return;
         }
 
@@ -1043,13 +1264,13 @@ namespace ul::menu::ui {
 
         const double area_w = (double)this->GetWidth();
         const double area_h = (double)this->GetHeight();
-        const double H = area_h * 0.80;
+        const double H = area_h * 0.62;
         const double d = H * (474.0 / 760.0);
         const double ws = H * 0.085;
         const double gap = H * 0.014;
         const double U = H * 1.3;
         const double cx = (double)x + area_w / 2.0;
-        const double cy = (double)y + area_h * 0.47;
+        const double cy = (double)y + area_h * 0.45 + this->shelf_vy * 160.0;
 
         // Pre-computed integral of the scale curve: far cases pack tighter on screen
         if(this->shelf_xs.empty() || (this->shelf_xs_u != U)) {
@@ -1192,6 +1413,422 @@ namespace ul::menu::ui {
             if(shade > 0.01) {
                 drawer->RenderRoundedRectangleFill({ 0x05, 0x06, 0x0E, (u8)(255.0 * shade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
             }
+        }
+    }
+
+    // ---- Focused game info + category tabs ----
+
+    namespace {
+
+        std::string ShelfSpecialName(const Entry &entry) {
+            switch(entry.type) {
+                case EntryType::SpecialEntryMiiEdit: return "Editor de Mii";
+                case EntryType::SpecialEntryWebBrowser: return "Navegador";
+                case EntryType::SpecialEntryUserPage: return "Perfil";
+                case EntryType::SpecialEntrySettings: return "Configuración";
+                case EntryType::SpecialEntryThemes: return "Temas";
+                case EntryType::SpecialEntryControllers: return "Controles";
+                case EntryType::SpecialEntryAlbum: return "Álbum";
+                case EntryType::SpecialEntryAmiibo: return "amiibo";
+                default: return "";
+            }
+        }
+
+        void ShelfDescribe(Entry &entry, std::string &out_title, std::string &out_meta) {
+            if(entry.IsSpecial()) {
+                out_title = ShelfSpecialName(entry);
+                out_meta = "Sistema";
+                return;
+            }
+            if(entry.Is<EntryType::Folder>()) {
+                out_title = entry.folder_info.name;
+                out_meta = "Categoría";
+                return;
+            }
+            entry.TryLoadNacp();
+            out_title = entry.control.name.empty() ? "Sin título" : entry.control.name;
+            std::string meta;
+            if(entry.Is<EntryType::Homebrew>()) {
+                meta = "Homebrew";
+            }
+            if(!entry.control.author.empty()) {
+                meta += (meta.empty() ? "" : "   ·   ") + entry.control.author;
+            }
+            if(!entry.control.version.empty()) {
+                meta += (meta.empty() ? "" : "   ·   ") + std::string("Versión ") + entry.control.version;
+            }
+            if(entry.Is<EntryType::Application>() && entry.app_info.IsGameCardInserted()) {
+                meta += "   ·   Cartucho";
+            }
+            if(g_GlobalSettings.IsSuspended() && g_GlobalSettings.IsEntrySuspended(entry)) {
+                meta += "   ·   En pausa";
+            }
+            out_meta = meta;
+        }
+
+        inline void RenderTextFit(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture tex, const double cx_or_x, const s32 y, const double max_w, const u8 alpha, const bool centered) {
+            if(tex == nullptr) {
+                return;
+            }
+            const double tw = (double)pu::ui::render::GetTextureWidth(tex);
+            const double th = (double)pu::ui::render::GetTextureHeight(tex);
+            const auto k = std::min(1.0, max_w / tw);
+            const auto dw = tw * k;
+            const auto dh = th * k;
+            const auto dx = centered ? (cx_or_x - dw / 2.0) : cx_or_x;
+            drawer->RenderTexture(tex, (s32)dx, y, pu::ui::render::TextureRenderOptions(alpha, (s32)dw, (s32)dh, {}, {}, {}));
+        }
+
+    }
+
+    void EntryMenu::ShelfRenderInfo(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
+        const double area_w = (double)this->GetWidth();
+        const double area_h = (double)this->GetHeight();
+
+        // Tabs: one per shelf; Up/Down (or a tap) switches
+        this->shelf_tab_hits.clear();
+        if(this->shelf_cats.size() > 1) {
+            const auto font = pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium);
+            std::vector<s32> widths;
+            s32 total = 0;
+            s32 cur_left = 0;
+            s32 cur_right = 0;
+            for(u32 i = 0; i < this->shelf_cats.size(); i++) {
+                auto &tex = this->shelf_tab_texts.at(i);
+                if(tex == nullptr) {
+                    tex = pu::ui::render::RenderText(font, this->shelf_cats.at(i).name, { 0xFF, 0xFF, 0xFF, 0xFF });
+                }
+                const auto w = pu::ui::render::GetTextureWidth(tex) + 44;
+                if((s32)i == this->shelf_cat) {
+                    cur_left = total;
+                    cur_right = total + w;
+                }
+                widths.push_back(w);
+                total += w + 14;
+            }
+            const auto left = x + 110;
+            const auto max_right = x + (s32)area_w - 110;
+            s32 shift = 0;
+            if(left + cur_right > max_right) {
+                shift = (left + cur_right) - max_right;
+            }
+            if(left + cur_left - shift < left) {
+                shift = cur_left;
+            }
+            s32 tx = left - shift;
+            const auto ty = y + 18;
+            const auto th = 56;
+            for(u32 i = 0; i < this->shelf_cats.size(); i++) {
+                const auto w = widths.at(i);
+                const auto is_cur = (s32)i == this->shelf_cat;
+                if((tx + w > x) && (tx < x + (s32)area_w)) {
+                    if(is_cur) {
+                        drawer->RenderRoundedRectangleFill(ShelfCaseColor, tx, ty, w, th, th / 2);
+                    }
+                    else {
+                        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, 0x1C }, tx, ty, w, th, th / 2);
+                    }
+                    auto tex = this->shelf_tab_texts.at(i);
+                    const auto tth = pu::ui::render::GetTextureHeight(tex);
+                    drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions(is_cur ? 0xFF : 0xA8, {}, {}, {}, {}, {}));
+                    this->shelf_tab_hits.push_back({ (s32)i, tx, ty, w, th });
+                }
+                tx += w + 14;
+            }
+        }
+
+        // Title + details of the focused case
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv == 0) {
+            this->ShelfClearInfo();
+            return;
+        }
+        if((this->shelf_info_idx != (s32)this->cur_entry_idx) || (this->shelf_info_path != this->cur_path)) {
+            this->ShelfClearInfo();
+            this->shelf_info_idx = this->cur_entry_idx;
+            this->shelf_info_path = this->cur_path;
+            if(this->cur_entry_idx < this->cur_entries.size()) {
+                std::string title;
+                std::string meta;
+                ShelfDescribe(this->cur_entries.at(this->cur_entry_idx), title, meta);
+                if(!title.empty()) {
+                    this->shelf_info_title = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Large), title, { 0xFF, 0xFF, 0xFF, 0xFF });
+                }
+                if(!meta.empty()) {
+                    this->shelf_info_meta = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), meta, { 0xFF, 0xFF, 0xFF, 0xFF });
+                }
+            }
+        }
+
+        // Fade the text in while the shelf settles
+        const auto settle = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 2.5, 0.0, 1.0);
+        const auto cx = (double)x + area_w / 2.0;
+        const auto ty = y + (s32)(area_h * 0.815);
+        RenderTextFit(drawer, this->shelf_info_title, cx, ty, area_w - 260.0, (u8)(255.0 * settle), true);
+        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 66, area_w - 260.0, (u8)(170.0 * settle), true);
+    }
+
+    // ---- HOME game sheet ----
+
+    void EntryMenu::SheetFree() {
+        for(auto &tex : this->sheet_opt_texts) {
+            pu::ui::render::DeleteTexture(tex);
+        }
+        this->sheet_opt_texts.clear();
+        pu::ui::render::DeleteTexture(this->sheet_title);
+        pu::ui::render::DeleteTexture(this->sheet_meta);
+        pu::ui::render::DeleteTexture(this->sheet_badge);
+        pu::ui::render::DeleteTexture(this->sheet_hint);
+        this->sheet_title = nullptr;
+        this->sheet_meta = nullptr;
+        this->sheet_badge = nullptr;
+        this->sheet_hint = nullptr;
+    }
+
+    void EntryMenu::SheetOpen() {
+        this->SheetFree();
+
+        std::string title;
+        std::string meta;
+        bool found = false;
+
+        // Is the paused game on the current shelf? Then focus it, too.
+        for(u32 i = 0; i < this->cur_entries.size(); i++) {
+            auto &entry = this->cur_entries.at(i);
+            if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
+                ShelfDescribe(entry, title, meta);
+                found = true;
+                if(this->IsInRoot() && entry.Is<EntryType::Homebrew>()) {
+                    this->shelf_root_filter = ShelfFilter::Homebrew;
+                    this->shelf_cats_sig.clear();
+                }
+                if(i != this->cur_entry_idx) {
+                    const auto prev_idx = (s32)this->cur_entry_idx;
+                    this->SetFocusedEntryIndex(i);
+                    this->NotifyFocusedEntryChanged(prev_idx);
+                }
+                this->shelf_synced = false;
+                break;
+            }
+        }
+
+        // Otherwise look for it in the root and in every category
+        if(!found) {
+            const auto &root = GetActiveMenuPath();
+            auto search = [&](std::vector<Entry> entries) {
+                for(auto &entry : entries) {
+                    if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
+                        ShelfDescribe(entry, title, meta);
+                        return true;
+                    }
+                }
+                return false;
+            };
+            auto root_entries = LoadEntries(root);
+            found = search(root_entries);
+            for(const auto &entry : root_entries) {
+                if(found) {
+                    break;
+                }
+                if(entry.Is<EntryType::Folder>()) {
+                    found = search(LoadEntries(entry.GetFolderPath()));
+                }
+            }
+        }
+
+        if(title.empty()) {
+            title = "Juego en pausa";
+        }
+        // The "En pausa" tag is already the badge here
+        const std::string paused_tag = "   ·   En pausa";
+        if((meta.length() >= paused_tag.length()) && (meta.compare(meta.length() - paused_tag.length(), paused_tag.length(), paused_tag) == 0)) {
+            meta.erase(meta.length() - paused_tag.length());
+        }
+
+        const auto white = pu::ui::Color{ 0xFF, 0xFF, 0xFF, 0xFF };
+        this->sheet_title = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Large), title, white);
+        if(!meta.empty()) {
+            this->sheet_meta = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), meta, white);
+        }
+        this->sheet_badge = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), "EN PAUSA", white);
+        this->sheet_hint = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), "A  Elegir        B  Biblioteca        HOME  Volver al juego", white);
+
+        this->sheet_actions = { static_cast<u32>(SheetAction::Resume), static_cast<u32>(SheetAction::Close), static_cast<u32>(SheetAction::Album), static_cast<u32>(SheetAction::Library) };
+        const std::vector<std::string> labels = { "Continuar jugando", "Cerrar juego", "Álbum", "Ir a la biblioteca" };
+        for(const auto &label : labels) {
+            this->sheet_opt_texts.push_back(pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), label, white));
+        }
+
+        this->sheet_sel = 0;
+        this->sheet_anim = 0.0;
+        this->sheet_open = true;
+    }
+
+    void EntryMenu::SheetExecute(const u32 action) {
+        const auto act = static_cast<SheetAction>(action);
+        switch(act) {
+            case SheetAction::Resume: {
+                this->CloseSheetForResume();
+                if(this->sheet_action_cb) {
+                    this->sheet_action_cb(act);
+                }
+                break;
+            }
+            case SheetAction::Close: {
+                if(this->sheet_action_cb) {
+                    this->sheet_action_cb(act);
+                }
+                if(!g_GlobalSettings.IsSuspended()) {
+                    this->sheet_open = false;
+                    this->ShelfClearInfo();
+                }
+                break;
+            }
+            case SheetAction::Album: {
+                if(this->sheet_action_cb) {
+                    this->sheet_action_cb(act);
+                }
+                break;
+            }
+            case SheetAction::Library: {
+                this->sheet_open = false;
+                break;
+            }
+        }
+    }
+
+    void EntryMenu::SheetInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        if(!touch_pos.IsEmpty()) {
+            this->sheet_touching = true;
+            this->sheet_touch_x = touch_pos.x;
+            this->sheet_touch_y = touch_pos.y;
+            return;
+        }
+        if(this->sheet_touching) {
+            this->sheet_touching = false;
+            for(const auto &hit : this->sheet_hits) {
+                if((this->sheet_touch_x >= hit.x) && (this->sheet_touch_x < hit.x + hit.w) && (this->sheet_touch_y >= hit.y) && (this->sheet_touch_y < hit.y + hit.h)) {
+                    if(hit.pos >= 0) {
+                        this->sheet_sel = hit.pos;
+                        this->SheetExecute(this->sheet_actions.at(hit.pos));
+                    }
+                    return;
+                }
+            }
+            // Tapped outside the panel: back to the library
+            this->sheet_open = false;
+            return;
+        }
+
+        const auto n = (s32)this->sheet_actions.size();
+        if(keys_down & HidNpadButton_AnyUp) {
+            this->sheet_sel = (this->sheet_sel + n - 1) % n;
+            this->cur_entry_change_started_cb();
+        }
+        else if(keys_down & HidNpadButton_AnyDown) {
+            this->sheet_sel = (this->sheet_sel + 1) % n;
+            this->cur_entry_change_started_cb();
+        }
+        else if(keys_down & HidNpadButton_A) {
+            this->SheetExecute(this->sheet_actions.at(this->sheet_sel));
+        }
+        else if(keys_down & HidNpadButton_B) {
+            this->SheetExecute(static_cast<u32>(SheetAction::Library));
+        }
+    }
+
+    void EntryMenu::RenderOverlay(pu::ui::render::Renderer::Ref &drawer) {
+        if(!ShelfMode) {
+            return;
+        }
+
+        // Coming back from a game with HOME: show the game sheet first
+        if(!this->sheet_checked) {
+            this->sheet_checked = true;
+            if(g_GlobalSettings.IsSuspended() && HasScreenCaptureBackground()) {
+                this->SheetOpen();
+            }
+        }
+
+        const auto target = this->sheet_open ? 1.0 : 0.0;
+        this->sheet_anim += (target - this->sheet_anim) * 0.20;
+        if(std::abs(target - this->sheet_anim) < 0.003) {
+            this->sheet_anim = target;
+        }
+        if(!this->sheet_open && (this->sheet_anim <= 0.0)) {
+            if(this->sheet_title != nullptr) {
+                this->SheetFree();
+            }
+            this->sheet_hits.clear();
+            return;
+        }
+
+        const auto a = SmoothStep(this->sheet_anim);
+        const auto alpha = [&](const double v) {
+            return (u8)std::clamp(v * a, 0.0, 255.0);
+        };
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x10, alpha(225.0) }, 0, 0, sw, sh);
+
+        // Glass panel
+        const s32 pw = 1640;
+        const s32 ph = 780;
+        const s32 px = (sw - pw) / 2;
+        const s32 py = (sh - ph) / 2 + (s32)((1.0 - a) * 70.0);
+        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(34.0) }, px - 2, py - 2, pw + 4, ph + 4, 30);
+        drawer->RenderRoundedRectangleFill({ 0x16, 0x18, 0x2C, alpha(244.0) }, px, py, pw, ph, 28);
+
+        // Game capture: zooms from full screen into the thumbnail
+        const double tw = 960.0;
+        const double th = 540.0;
+        const double tx = px + 60.0;
+        const double ty = py + 60.0;
+        const auto rx = tx * a;
+        const auto ry = ty * a;
+        const auto rw = sw + (tw - sw) * a;
+        const auto rh = sh + (th - sh) * a;
+        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(255.0) }, (s32)rx - 5, (s32)ry - 5, (s32)rw + 10, (s32)rh + 10, 14);
+        auto capture = GetScreenCaptureBackground()->GetTexture();
+        if(capture != nullptr) {
+            drawer->RenderTexture(capture, (s32)rx, (s32)ry, pu::ui::render::TextureRenderOptions(0xFF, (s32)rw, (s32)rh, {}, {}, {}));
+        }
+        else {
+            drawer->RenderRectangleFill({ 0x22, 0x24, 0x3A, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
+        }
+        RenderTextFit(drawer, this->sheet_hint, tx, (s32)(ty + th + 44.0), tw, alpha(150.0), false);
+
+        // Right column: badge, title, details, options
+        const double cx0 = tx + tw + 64.0;
+        const double colw = (px + pw - 60.0) - cx0;
+        if(this->sheet_badge != nullptr) {
+            const auto bw = pu::ui::render::GetTextureWidth(this->sheet_badge);
+            const auto bh = pu::ui::render::GetTextureHeight(this->sheet_badge);
+            drawer->RenderRoundedRectangleFill({ ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, (s32)ty, bw + 28, bh + 12, (bh + 12) / 2);
+            drawer->RenderTexture(this->sheet_badge, (s32)cx0 + 14, (s32)ty + 6, pu::ui::render::TextureRenderOptions(alpha(255.0), {}, {}, {}, {}, {}));
+        }
+        RenderTextFit(drawer, this->sheet_title, cx0, (s32)(ty + 62.0), colw, alpha(255.0), false);
+        RenderTextFit(drawer, this->sheet_meta, cx0, (s32)(ty + 128.0), colw, alpha(165.0), false);
+
+        this->sheet_hits.clear();
+        this->sheet_hits.push_back({ -1, px, py, pw, ph });
+        const s32 row_h = 76;
+        const s32 row_gap = 12;
+        s32 oy = (s32)(ty + 210.0);
+        for(u32 i = 0; i < this->sheet_opt_texts.size(); i++) {
+            const auto sel = (s32)i == this->sheet_sel;
+            if(sel) {
+                drawer->RenderRoundedRectangleFill({ ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, oy, (s32)colw, row_h, 16);
+            }
+            else {
+                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(20.0) }, (s32)cx0, oy, (s32)colw, row_h, 16);
+            }
+            auto tex = this->sheet_opt_texts.at(i);
+            const auto tth = pu::ui::render::GetTextureHeight(tex);
+            drawer->RenderTexture(tex, (s32)cx0 + 28, oy + (row_h - tth) / 2, pu::ui::render::TextureRenderOptions(alpha(sel ? 255.0 : 210.0), {}, {}, {}, {}, {}));
+            this->sheet_hits.insert(this->sheet_hits.begin(), { (s32)i, (s32)cx0, oy, (s32)colw, row_h });
+            oy += row_h + row_gap;
         }
     }
 
