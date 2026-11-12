@@ -1,15 +1,15 @@
 {
     "suspended_app_final_alpha": 80,
     "text_color": "#ffffffff",
-    "toast_base_color": "#14162aee",
+    "toast_base_color": "#2a1014ee",
     "toast_text_color": "#ffffffff",
     "menu_focus_color": "#ffffff40",
-    "menu_bg_color": "#14162aee",
+    "menu_bg_color": "#2a1014ee",
     "dialog_title_color": "#ffffffff",
     "dialog_cnt_color": "#e8e8f0ff",
     "dialog_opt_color": "#ffffffff",
-    "dialog_color": "#1b1e34f2",
-    "dialog_over_color": "#2c3152ff",
+    "dialog_color": "#261014f2",
+    "dialog_over_color": "#5a1a1eff",
     "main_menu": {
         "top_menu_bg": {
             "x": 61,

@@ -872,6 +872,9 @@ namespace ul::menu::ui {
         constexpr pu::ui::Color ShelfLabelColor = { 0xF4, 0xF2, 0xEE, 0xFF };
         constexpr pu::ui::Color ShelfTitleColor = { 0x14, 0x14, 0x14, 0xFF };
 
+        // Below this many games the shelf is a plain row (looping 2-3 cases looks broken)
+        constexpr s32 ShelfLoopMin = 7;
+
         inline double SmoothStep(const double v) {
             const auto c = std::clamp(v, 0.0, 1.0);
             return c * c * (3.0 - 2.0 * c);
@@ -1111,7 +1114,19 @@ namespace ul::menu::ui {
         }
 
         const auto prev_idx = (s32)this->cur_entry_idx;
-        this->shelf_target += dir;
+        if(nv < ShelfLoopMin) {
+            // Few games: a plain row with ends, no infinite loop
+            const auto cur = ((this->shelf_target % nv) + nv) % nv;
+            const auto next = std::clamp(cur + dir, 0, nv - 1);
+            if(next == cur) {
+                return;
+            }
+            this->shelf_target = next;
+            this->shelf_s = std::clamp(this->shelf_s, -0.5, (double)nv - 0.5);
+        }
+        else {
+            this->shelf_target += dir;
+        }
         const auto pos = ((this->shelf_target % nv) + nv) % nv;
         this->cur_entry_change_started_cb();
         this->SetFocusedEntryIndex(this->shelf_valid.at(pos));
@@ -1124,9 +1139,12 @@ namespace ul::menu::ui {
             return;
         }
         const auto cur = ((this->shelf_target % nv) + nv) % nv;
-        auto delta = ((pos - cur) % nv + nv) % nv;
-        if(delta > nv / 2) {
-            delta -= nv;
+        auto delta = pos - cur;
+        if(nv >= ShelfLoopMin) {
+            delta = ((pos - cur) % nv + nv) % nv;
+            if(delta > nv / 2) {
+                delta -= nv;
+            }
         }
         if(delta != 0) {
             this->ShelfMove(delta);
@@ -1205,13 +1223,14 @@ namespace ul::menu::ui {
             this->shelf_hold_frames = 0;
         }
         else if(left_down || right_down) {
+            // One press = one game
             this->ShelfMove(left_down ? -1 : 1);
-            this->shelf_hold_frames = 0;
+            this->shelf_hold_frames = 1;
         }
         else if(left_held || right_held) {
-            // Hold to scroll: short delay, then repeat
+            // Hold to scroll: wait ~0.45 s, then one game every ~0.13 s
             this->shelf_hold_frames++;
-            if((this->shelf_hold_frames == 1) || ((this->shelf_hold_frames > 18) && ((this->shelf_hold_frames % 4) == 0))) {
+            if((this->shelf_hold_frames > 27) && ((this->shelf_hold_frames % 8) == 0)) {
                 this->ShelfMove(left_held ? -1 : 1);
             }
         }
@@ -1296,12 +1315,15 @@ namespace ul::menu::ui {
         std::vector<Item> items;
         items.reserve(nv);
         for(s32 p = 0; p < nv; p++) {
-            double r = std::fmod((double)p - this->shelf_s, (double)nv);
-            if(r < 0) {
-                r += nv;
-            }
-            if(r >= nv / 2.0) {
-                r -= nv;
+            double r = (double)p - this->shelf_s;
+            if(nv >= ShelfLoopMin) {
+                r = std::fmod(r, (double)nv);
+                if(r < 0) {
+                    r += nv;
+                }
+                if(r >= nv / 2.0) {
+                    r -= nv;
+                }
             }
             items.push_back({ p, r });
         }
@@ -1770,7 +1792,7 @@ namespace ul::menu::ui {
         const s32 sw = pu::ui::render::ScreenWidth;
         const s32 sh = pu::ui::render::ScreenHeight;
 
-        drawer->RenderRectangleFill({ 0x06, 0x07, 0x10, alpha(225.0) }, 0, 0, sw, sh);
+        drawer->RenderRectangleFill({ 0x0E, 0x04, 0x06, alpha(225.0) }, 0, 0, sw, sh);
 
         // Glass panel
         const s32 pw = 1640;
@@ -1778,7 +1800,7 @@ namespace ul::menu::ui {
         const s32 px = (sw - pw) / 2;
         const s32 py = (sh - ph) / 2 + (s32)((1.0 - a) * 70.0);
         drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(34.0) }, px - 2, py - 2, pw + 4, ph + 4, 30);
-        drawer->RenderRoundedRectangleFill({ 0x16, 0x18, 0x2C, alpha(244.0) }, px, py, pw, ph, 28);
+        drawer->RenderRoundedRectangleFill({ 0x22, 0x0E, 0x12, alpha(244.0) }, px, py, pw, ph, 28);
 
         // Game capture: zooms from full screen into the thumbnail
         const double tw = 960.0;
@@ -1795,7 +1817,7 @@ namespace ul::menu::ui {
             drawer->RenderTexture(capture, (s32)rx, (s32)ry, pu::ui::render::TextureRenderOptions(0xFF, (s32)rw, (s32)rh, {}, {}, {}));
         }
         else {
-            drawer->RenderRectangleFill({ 0x22, 0x24, 0x3A, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
+            drawer->RenderRectangleFill({ 0x3A, 0x14, 0x18, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
         }
         RenderTextFit(drawer, this->sheet_hint, tx, (s32)(ty + th + 44.0), tw, alpha(150.0), false);
 
