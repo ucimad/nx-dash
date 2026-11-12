@@ -1119,6 +1119,8 @@ namespace ul::menu::ui {
             const auto cur = ((this->shelf_target % nv) + nv) % nv;
             const auto next = std::clamp(cur + dir, 0, nv - 1);
             if(next == cur) {
+                // Rubber band: nudge past the end, the easing pulls it back
+                this->shelf_s += (dir > 0) ? 0.22 : -0.22;
                 return;
             }
             this->shelf_target = next;
@@ -1198,6 +1200,7 @@ namespace ul::menu::ui {
                     if((tx >= it->x) && (tx < it->x + it->w) && (ty >= it->y) && (ty < it->y + it->h)) {
                         const auto cur = (nv > 0) ? (((this->shelf_target % nv) + nv) % nv) : -1;
                         if(it->pos == cur) {
+                            this->shelf_press = 1.0;
                             this->cur_entry_input_cb(HidNpadButton_A);
                         }
                         else {
@@ -1213,6 +1216,7 @@ namespace ul::menu::ui {
         const auto nv = (s32)this->shelf_valid.size();
         const auto left_down = keys_down & HidNpadButton_Left;
         const auto right_down = keys_down & HidNpadButton_Right;
+        this->shelf_held = this->shelf_hold_frames > 27;
         const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
         const auto right_held = keys_held & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
         const auto up_down = keys_down & (HidNpadButton_Up | HidNpadButton_StickLUp | HidNpadButton_StickRUp);
@@ -1248,6 +1252,9 @@ namespace ul::menu::ui {
                 fwd &= ~(u64)(HidNpadButton_A | HidNpadButton_X | HidNpadButton_Y);
             }
             if(fwd) {
+                if((fwd & HidNpadButton_A) && (nv > 0)) {
+                    this->shelf_press = 1.0;
+                }
                 this->cur_entry_input_cb(fwd);
             }
         }
@@ -1276,7 +1283,11 @@ namespace ul::menu::ui {
         }
 
         // Ease towards the target (continuous position, so wrapping around stays smooth)
-        this->shelf_s += ((double)this->shelf_target - this->shelf_s) * 0.18;
+        this->shelf_s += ((double)this->shelf_target - this->shelf_s) * (this->shelf_held ? 0.42 : 0.20);
+        this->shelf_press *= 0.80;
+        if(this->shelf_press < 0.01) {
+            this->shelf_press = 0.0;
+        }
         if(std::abs((double)this->shelf_target - this->shelf_s) < 0.001) {
             this->shelf_s = (double)this->shelf_target;
         }
@@ -1347,8 +1358,10 @@ namespace ul::menu::ui {
             }
 
             const auto sc = scl(u);
-            const auto case_w = (ws + (d - ws) * o) * sc;
-            const auto case_h = H * sc;
+            // Pressed: the focused case dips to 0.97
+            const auto press_k = 1.0 - 0.03 * this->shelf_press * o;
+            const auto case_w = (ws + (d - ws) * o) * sc * press_k;
+            const auto case_h = H * sc * press_k;
             const auto sink = H * 0.5 * (1.0 - sc) * 0.42;
             const auto ex = cx + xsc(u) - case_w / 2.0;
             const auto ey = cy - case_h / 2.0 + sink - o * H * 0.02;
@@ -1545,14 +1558,14 @@ namespace ul::menu::ui {
                 const auto is_cur = (s32)i == this->shelf_cat;
                 if((tx + w > x) && (tx < x + (s32)area_w)) {
                     if(is_cur) {
-                        drawer->RenderRoundedRectangleFill(ShelfCaseColor, tx, ty, w, th, th / 2);
+                        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, 0x34 }, tx, ty, w, th, th / 2);
                     }
                     else {
-                        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, 0x1C }, tx, ty, w, th, th / 2);
+                        // Quiet: no chip for the rest, just dimmer text
                     }
                     auto tex = this->shelf_tab_texts.at(i);
                     const auto tth = pu::ui::render::GetTextureHeight(tex);
-                    drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions(is_cur ? 0xFF : 0xA8, {}, {}, {}, {}, {}));
+                    drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions(is_cur ? 0xFF : 0x8C, {}, {}, {}, {}, {}));
                     this->shelf_tab_hits.push_back({ (s32)i, tx, ty, w, th });
                 }
                 tx += w + 14;
@@ -1587,7 +1600,8 @@ namespace ul::menu::ui {
         const auto cx = (double)x + area_w / 2.0;
         const auto ty = y + (s32)(area_h * 0.815);
         RenderTextFit(drawer, this->shelf_info_title, cx, ty, area_w - 260.0, (u8)(255.0 * settle), true);
-        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 66, area_w - 260.0, (u8)(170.0 * settle), true);
+        const auto settle_late = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 6.0, 0.0, 1.0);
+        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 70 + (s32)((1.0 - settle_late) * 8.0), area_w - 260.0, (u8)(150.0 * settle_late), true);
     }
 
     // ---- HOME game sheet ----
@@ -1773,7 +1787,7 @@ namespace ul::menu::ui {
         }
 
         const auto target = this->sheet_open ? 1.0 : 0.0;
-        this->sheet_anim += (target - this->sheet_anim) * 0.20;
+        this->sheet_anim += (target - this->sheet_anim) * (this->sheet_open ? 0.20 : 0.26);
         if(std::abs(target - this->sheet_anim) < 0.003) {
             this->sheet_anim = target;
         }
@@ -1795,10 +1809,11 @@ namespace ul::menu::ui {
         drawer->RenderRectangleFill({ 0x0E, 0x04, 0x06, alpha(225.0) }, 0, 0, sw, sh);
 
         // Glass panel
-        const s32 pw = 1640;
-        const s32 ph = 780;
+        const auto pop = 0.95 + 0.05 * a;
+        const s32 pw = (s32)(1640.0 * pop);
+        const s32 ph = (s32)(780.0 * pop);
         const s32 px = (sw - pw) / 2;
-        const s32 py = (sh - ph) / 2 + (s32)((1.0 - a) * 70.0);
+        const s32 py = (sh - ph) / 2;
         drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(34.0) }, px - 2, py - 2, pw + 4, ph + 4, 30);
         drawer->RenderRoundedRectangleFill({ 0x22, 0x0E, 0x12, alpha(244.0) }, px, py, pw, ph, 28);
 
@@ -1841,14 +1856,11 @@ namespace ul::menu::ui {
         for(u32 i = 0; i < this->sheet_opt_texts.size(); i++) {
             const auto sel = (s32)i == this->sheet_sel;
             if(sel) {
-                drawer->RenderRoundedRectangleFill({ ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, oy, (s32)colw, row_h, 16);
-            }
-            else {
-                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(20.0) }, (s32)cx0, oy, (s32)colw, row_h, 16);
+                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(46.0) }, (s32)cx0, oy, (s32)colw, row_h, 18);
             }
             auto tex = this->sheet_opt_texts.at(i);
             const auto tth = pu::ui::render::GetTextureHeight(tex);
-            drawer->RenderTexture(tex, (s32)cx0 + 28, oy + (row_h - tth) / 2, pu::ui::render::TextureRenderOptions(alpha(sel ? 255.0 : 210.0), {}, {}, {}, {}, {}));
+            drawer->RenderTexture(tex, (s32)cx0 + 28, oy + (row_h - tth) / 2, pu::ui::render::TextureRenderOptions(alpha(sel ? 255.0 : 150.0), {}, {}, {}, {}, {}));
             this->sheet_hits.insert(this->sheet_hits.begin(), { (s32)i, (s32)cx0, oy, (s32)colw, row_h });
             oy += row_h + row_gap;
         }

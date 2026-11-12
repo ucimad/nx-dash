@@ -164,6 +164,8 @@ namespace ul::menu::ui {
             bool shelf_root_has_special = false;
             std::map<std::string, s32> shelf_cat_pos;
             double shelf_vy = 0.0;
+            double shelf_press = 0.0;
+            bool shelf_held = false;
             std::vector<pu::sdl2::Texture> shelf_tab_texts;
             std::vector<std::string> shelf_tab_names;
             std::vector<ShelfHit> shelf_tab_hits;
