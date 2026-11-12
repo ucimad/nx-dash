@@ -505,7 +505,7 @@ namespace ul::menu::ui {
         }
 
         if(ShelfMode) {
-            this->ShelfInput(keys_down, keys_held);
+            this->ShelfInput(keys_down, keys_held, touch_pos);
             return;
         }
 
@@ -935,7 +935,69 @@ namespace ul::menu::ui {
         this->NotifyFocusedEntryChanged(prev_idx);
     }
 
-    void EntryMenu::ShelfInput(const u64 keys_down, const u64 keys_held) {
+    void EntryMenu::ShelfMoveToPos(const s32 pos) {
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv == 0) {
+            return;
+        }
+        const auto cur = ((this->shelf_target % nv) + nv) % nv;
+        auto delta = ((pos - cur) % nv + nv) % nv;
+        if(delta > nv / 2) {
+            delta -= nv;
+        }
+        if(delta != 0) {
+            this->ShelfMove(delta);
+        }
+    }
+
+    void EntryMenu::ShelfInput(const u64 keys_down, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
+        // ---- Touch: drag to scroll, tap a case to focus it, tap the focused case to open it ----
+        if(!touch_pos.IsEmpty()) {
+            if(!this->shelf_touching) {
+                this->shelf_touching = true;
+                this->shelf_touch_moved = false;
+                this->shelf_touch_start_x = touch_pos.x;
+                this->shelf_touch_applied = 0;
+            }
+            this->shelf_touch_last_x = touch_pos.x;
+            this->shelf_touch_last_y = touch_pos.y;
+
+            const auto dx = touch_pos.x - this->shelf_touch_start_x;
+            if(std::abs(dx) > 24) {
+                this->shelf_touch_moved = true;
+            }
+            if(this->shelf_touch_moved && (this->shelf_step_px > 1.0)) {
+                const auto want = (s32)std::lround(-(double)dx / this->shelf_step_px);
+                if(want != this->shelf_touch_applied) {
+                    this->ShelfMove(want - this->shelf_touch_applied);
+                    this->shelf_touch_applied = want;
+                }
+            }
+            return;
+        }
+        else if(this->shelf_touching) {
+            this->shelf_touching = false;
+            if(!this->shelf_touch_moved) {
+                // Tap: nearest case first (hits are stored far-to-near)
+                const auto nv = (s32)this->shelf_valid.size();
+                for(auto it = this->shelf_hits.rbegin(); it != this->shelf_hits.rend(); it++) {
+                    const auto tx = this->shelf_touch_last_x;
+                    const auto ty = this->shelf_touch_last_y;
+                    if((tx >= it->x) && (tx < it->x + it->w) && (ty >= it->y) && (ty < it->y + it->h)) {
+                        const auto cur = (nv > 0) ? (((this->shelf_target % nv) + nv) % nv) : -1;
+                        if(it->pos == cur) {
+                            this->cur_entry_input_cb(HidNpadButton_A);
+                        }
+                        else {
+                            this->ShelfMoveToPos(it->pos);
+                        }
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+
         const auto left_down = keys_down & HidNpadButton_Left;
         const auto right_down = keys_down & HidNpadButton_Right;
         const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
@@ -1027,6 +1089,9 @@ namespace ul::menu::ui {
             return std::abs(a.r) > std::abs(b.r);
         });
 
+        this->shelf_hits.clear();
+        this->shelf_step_px = ws + gap;
+
         // Soft floor shadow under the focused case
         drawer->RenderShadowSimple((s32)(cx - d * 0.9), (s32)(cy + H / 2.0 - 6.0), (s32)(d * 1.8), 18, 120, 0xFF);
 
@@ -1057,6 +1122,7 @@ namespace ul::menu::ui {
             }
 
             const auto radius = (s32)std::max(2.0, 8.0 * sc);
+            this->shelf_hits.push_back({ it.pos, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h });
 
             // Focus ring
             if(o > 0.6) {

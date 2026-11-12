@@ -120,7 +120,23 @@ namespace ul::menu::ui {
             void ShelfClearTitles();
             void ShelfMove(const s32 dir);
             void ShelfRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y);
-            void ShelfInput(const u64 keys_down, const u64 keys_held);
+            void ShelfInput(const u64 keys_down, const u64 keys_held, const pu::ui::TouchPoint touch_pos);
+            struct ShelfHit {
+                s32 pos;
+                s32 x;
+                s32 y;
+                s32 w;
+                s32 h;
+            };
+            std::vector<ShelfHit> shelf_hits;
+            double shelf_step_px = 40.0;
+            bool shelf_touching = false;
+            bool shelf_touch_moved = false;
+            s32 shelf_touch_start_x = 0;
+            s32 shelf_touch_last_x = 0;
+            s32 shelf_touch_last_y = 0;
+            s32 shelf_touch_applied = 0;
+            void ShelfMoveToPos(const s32 pos);
 
             inline bool IsNotInSwipe() {
                 return this->swipe_mode == SwipeMode::None;
