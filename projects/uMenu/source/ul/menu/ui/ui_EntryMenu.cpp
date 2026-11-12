@@ -1,4 +1,6 @@
 #include <ul/menu/ui/ui_EntryMenu.hpp>
+#include <algorithm>
+#include <cmath>
 #include <ul/menu/ui/ui_MainMenuLayout.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 #include <ul/menu/smi/smi_Commands.hpp>
@@ -330,6 +332,11 @@ namespace ul::menu::ui {
             this->extra_entry_swipe_show_h_count = 0;
         }
 
+        if(ShelfMode) {
+            this->ShelfRender(drawer, x, y);
+            return;
+        }
+
         const auto cur_actual_entry_idx = this->IsCursorInTransition() ? this->pre_transition_entry_idx : this->cur_entry_idx;
         const auto base_idx = this->base_entry_idx_x * g_EntryHeightCount;
 
@@ -497,6 +504,11 @@ namespace ul::menu::ui {
             return;
         }
 
+        if(ShelfMode) {
+            this->ShelfInput(keys_down, keys_held);
+            return;
+        }
+
         const auto cursor_transition_abs_incr_x = this->entry_h_margin + this->entry_size;
         const auto cursor_transition_abs_incr_y = EntryVerticalMargin + this->entry_size;
 
@@ -604,6 +616,8 @@ namespace ul::menu::ui {
         for(auto &over_text : this->entry_over_texts) {
             pu::ui::render::DeleteTexture(over_text);
         }
+        this->ShelfClearTitles();
+        this->shelf_synced = false;
 
         this->entry_icons.clear();
         this->entry_over_texts.clear();
@@ -841,6 +855,277 @@ namespace ul::menu::ui {
         }
         else {
             return g_GlobalSettings.IsEntrySuspended(this->GetFocusedEntry());
+        }
+    }
+
+
+    // ======================================================================
+    // NX Dash shelf mode
+    // Cases stand on a shallow arc: the further from the focused entry, the
+    // smaller, darker and lower they sit. The focused entry opens up into a
+    // full "cover" (its icon), the rest show a spine with the title.
+    // ======================================================================
+
+    namespace {
+
+        constexpr pu::ui::Color ShelfCaseColor = { 0xD3, 0x24, 0x1C, 0xFF };
+        constexpr pu::ui::Color ShelfLabelColor = { 0xF4, 0xF2, 0xEE, 0xFF };
+        constexpr pu::ui::Color ShelfTitleColor = { 0x14, 0x14, 0x14, 0xFF };
+
+        inline double SmoothStep(const double v) {
+            const auto c = std::clamp(v, 0.0, 1.0);
+            return c * c * (3.0 - 2.0 * c);
+        }
+
+    }
+
+    void EntryMenu::ShelfClearTitles() {
+        for(auto &tex : this->shelf_title_texts) {
+            pu::ui::render::DeleteTexture(tex);
+        }
+        this->shelf_title_texts.clear();
+    }
+
+    void EntryMenu::ShelfRebuildValid() {
+        this->shelf_valid.clear();
+        for(u32 i = 0; i < this->cur_entries.size(); i++) {
+            if(!this->cur_entries.at(i).Is<EntryType::Invalid>()) {
+                this->shelf_valid.push_back(i);
+            }
+        }
+
+        if(this->shelf_title_texts.size() != this->cur_entries.size()) {
+            this->ShelfClearTitles();
+            this->shelf_title_texts.resize(this->cur_entries.size(), nullptr);
+        }
+
+        // Keep the shelf position in sync with the real focused entry (e.g. after MoveTo / folder changes)
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv > 0) {
+            const auto cur_pos = ((this->shelf_target % nv) + nv) % nv;
+            if(!this->shelf_synced || (this->shelf_valid.at(cur_pos) != this->cur_entry_idx)) {
+                s32 found = 0;
+                for(s32 i = 0; i < nv; i++) {
+                    if(this->shelf_valid.at(i) == this->cur_entry_idx) {
+                        found = i;
+                        break;
+                    }
+                }
+                this->shelf_target = found;
+                this->shelf_s = (double)found;
+                this->shelf_synced = true;
+                if(this->shelf_valid.at(found) != this->cur_entry_idx) {
+                    this->SetFocusedEntryIndex(this->shelf_valid.at(found));
+                }
+            }
+        }
+    }
+
+    void EntryMenu::ShelfMove(const s32 dir) {
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv == 0) {
+            return;
+        }
+
+        const auto prev_idx = (s32)this->cur_entry_idx;
+        this->shelf_target += dir;
+        const auto pos = ((this->shelf_target % nv) + nv) % nv;
+        this->cur_entry_change_started_cb();
+        this->SetFocusedEntryIndex(this->shelf_valid.at(pos));
+        this->NotifyFocusedEntryChanged(prev_idx);
+    }
+
+    void EntryMenu::ShelfInput(const u64 keys_down, const u64 keys_held) {
+        const auto left_down = keys_down & HidNpadButton_Left;
+        const auto right_down = keys_down & HidNpadButton_Right;
+        const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
+        const auto right_held = keys_held & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
+
+        if(left_down || right_down) {
+            this->ShelfMove(left_down ? -1 : 1);
+            this->shelf_hold_frames = 0;
+        }
+        else if(left_held || right_held) {
+            // Hold to scroll: short delay, then repeat
+            this->shelf_hold_frames++;
+            if((this->shelf_hold_frames == 1) || ((this->shelf_hold_frames > 18) && ((this->shelf_hold_frames % 4) == 0))) {
+                this->ShelfMove(left_held ? -1 : 1);
+            }
+        }
+        else if(keys_down & HidNpadButton_L) {
+            this->ShelfMove(-5);
+        }
+        else if(keys_down & HidNpadButton_R) {
+            this->ShelfMove(5);
+        }
+        else {
+            this->shelf_hold_frames = 0;
+            if(!(keys_down & (HidNpadButton_Up | HidNpadButton_Down))) {
+                this->cur_entry_input_cb(keys_down);
+            }
+        }
+    }
+
+    void EntryMenu::ShelfRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
+        this->ShelfRebuildValid();
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv == 0) {
+            return;
+        }
+
+        // Ease towards the target (continuous position, so wrapping around stays smooth)
+        this->shelf_s += ((double)this->shelf_target - this->shelf_s) * 0.18;
+        if(std::abs((double)this->shelf_target - this->shelf_s) < 0.001) {
+            this->shelf_s = (double)this->shelf_target;
+        }
+
+        const double area_w = (double)this->GetWidth();
+        const double area_h = (double)this->GetHeight();
+        const double H = area_h * 0.80;
+        const double d = H * (474.0 / 760.0);
+        const double ws = H * 0.085;
+        const double gap = H * 0.014;
+        const double U = H * 1.3;
+        const double cx = (double)x + area_w / 2.0;
+        const double cy = (double)y + area_h * 0.47;
+
+        // Pre-computed integral of the scale curve: far cases pack tighter on screen
+        if(this->shelf_xs.empty() || (this->shelf_xs_u != U)) {
+            this->shelf_xs.clear();
+            this->shelf_xs.push_back(0.0);
+            for(double u = 0.0; u < 3.0 * U; u += 2.0) {
+                this->shelf_xs.push_back(this->shelf_xs.back() + 2.0 / (1.0 + std::pow(u / U, 1.6)));
+            }
+            this->shelf_xs_u = U;
+        }
+        const auto xsc = [&](const double u) {
+            const auto i = std::min<size_t>(this->shelf_xs.size() - 1, (size_t)(std::abs(u) / 2.0));
+            return (u < 0 ? -1.0 : 1.0) * this->shelf_xs.at(i);
+        };
+        const auto scl = [&](const double u) {
+            return 1.0 / (1.0 + std::pow(std::abs(u) / U, 1.6));
+        };
+        const auto bump = [](const double r) {
+            return (std::abs(r) < 1.0) ? ((r + std::sin(M_PI * r) / M_PI) / 2.0) : ((r < 0) ? -0.5 : 0.5);
+        };
+
+        struct Item { s32 pos; double r; };
+        std::vector<Item> items;
+        items.reserve(nv);
+        for(s32 p = 0; p < nv; p++) {
+            double r = std::fmod((double)p - this->shelf_s, (double)nv);
+            if(r < 0) {
+                r += nv;
+            }
+            if(r >= nv / 2.0) {
+                r -= nv;
+            }
+            items.push_back({ p, r });
+        }
+        // Draw far ones first so near ones overlap them
+        std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) {
+            return std::abs(a.r) > std::abs(b.r);
+        });
+
+        // Soft floor shadow under the focused case
+        drawer->RenderShadowSimple((s32)(cx - d * 0.9), (s32)(cy + H / 2.0 - 6.0), (s32)(d * 1.8), 18, 120, 0xFF);
+
+        for(const auto &it : items) {
+            const auto r = it.r;
+            const auto o = SmoothStep(1.0 - std::abs(r));
+            const auto u = r * (ws + gap) + (d - ws + 1.4 * gap) * bump(r);
+            if(std::abs(u) > U * 1.95) {
+                continue;
+            }
+
+            const auto sc = scl(u);
+            const auto case_w = (ws + (d - ws) * o) * sc;
+            const auto case_h = H * sc;
+            const auto sink = H * 0.5 * (1.0 - sc) * 0.42;
+            const auto ex = cx + xsc(u) - case_w / 2.0;
+            const auto ey = cy - case_h / 2.0 + sink - o * H * 0.02;
+
+            const auto entry_idx = this->shelf_valid.at(it.pos);
+            auto &entry = this->cur_entries.at(entry_idx);
+            pu::sdl2::TextureHandle::Ref icon = (entry_idx < this->entry_icons.size()) ? this->entry_icons.at(entry_idx) : nullptr;
+            if((icon == nullptr) && this->pending_load_img_done && entry.Is<EntryType::Application>()) {
+                icon = LoadApplicationIconTexture(entry.app_info.app_id);
+                if(icon != nullptr) {
+                    entry.TryLoadNacp();
+                    this->entry_icons.at(entry_idx) = icon;
+                }
+            }
+
+            const auto radius = (s32)std::max(2.0, 8.0 * sc);
+
+            // Focus ring
+            if(o > 0.6) {
+                const auto ring = (u8)(255.0 * (o - 0.6) / 0.4);
+                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, ring }, (s32)ex - 5, (s32)ey - 5, (s32)case_w + 10, (s32)case_h + 10, radius + 4);
+            }
+
+            // Case body
+            drawer->RenderRoundedRectangleFill(ShelfCaseColor, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
+
+            if(o > 0.35) {
+                // Cover: the icon as key art inside the case frame
+                const auto a = (u8)(255.0 * std::min(1.0, (o - 0.35) / 0.4));
+                const auto pad = case_w * 0.06;
+                const auto band = case_h * 0.075;
+                const auto art = std::min(case_w - 2.0 * pad, case_h - band - 2.0 * pad);
+                if(icon != nullptr) {
+                    drawer->RenderTexture(icon->Get(), (s32)(ex + (case_w - art) / 2.0), (s32)(ey + band + pad), pu::ui::render::TextureRenderOptions(a, (s32)art, (s32)art, {}, {}, {}));
+                }
+            }
+            else {
+                // Spine: white label, small icon on top, vertical title
+                const auto a = (u8)(255.0 * std::min(1.0, (0.35 - o) / 0.35 + 0.0001));
+                const auto lw = case_w * 0.74;
+                const auto lx = ex + (case_w - lw) / 2.0;
+                const auto icon_s = lw;
+                const auto top = ey + case_h * 0.04;
+                if(icon != nullptr) {
+                    drawer->RenderTexture(icon->Get(), (s32)lx, (s32)top, pu::ui::render::TextureRenderOptions(a, (s32)icon_s, (s32)icon_s, {}, {}, {}));
+                }
+                const auto label_y = top + icon_s + case_h * 0.02;
+                const auto label_h = ey + case_h * 0.94 - label_y;
+                if(label_h > 4) {
+                    drawer->RenderRectangleFill({ ShelfLabelColor.r, ShelfLabelColor.g, ShelfLabelColor.b, a }, (s32)lx, (s32)label_y, (s32)lw, (s32)label_h);
+
+                    // Title texture, created once per entry at full size and scaled down
+                    auto &title_tex = this->shelf_title_texts.at(entry_idx);
+                    if(title_tex == nullptr) {
+                        std::string name;
+                        if(entry.Is<EntryType::Folder>()) {
+                            name = entry.folder_info.name;
+                        }
+                        else {
+                            entry.TryLoadNacp();
+                            name = entry.control.name;
+                        }
+                        if(!name.empty()) {
+                            title_tex = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), name, ShelfTitleColor);
+                        }
+                    }
+                    if(title_tex != nullptr) {
+                        const double tw = (double)pu::ui::render::GetTextureWidth(title_tex);
+                        const double th = (double)pu::ui::render::GetTextureHeight(title_tex);
+                        // Rotated 90 degrees: the text's width runs along the label height
+                        const auto k = std::min((label_h * 0.92) / tw, (lw * 0.8) / th);
+                        const auto dw = tw * k;
+                        const auto dh = th * k;
+                        const auto tcx = lx + lw / 2.0;
+                        const auto tcy = label_y + label_h / 2.0;
+                        drawer->RenderTexture(title_tex, (s32)(tcx - dw / 2.0), (s32)(tcy - dh / 2.0), pu::ui::render::TextureRenderOptions(a, (s32)dw, (s32)dh, 90.0f, {}, {}));
+                    }
+                }
+            }
+
+            // Depth shading: further cases get darker
+            const auto shade = std::min(0.72, o * 0.0 + (1.0 - sc) * 0.62) * (1.0 - o);
+            if(shade > 0.01) {
+                drawer->RenderRoundedRectangleFill({ 0x05, 0x06, 0x0E, (u8)(255.0 * shade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
+            }
         }
     }
 

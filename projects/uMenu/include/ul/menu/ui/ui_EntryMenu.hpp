@@ -106,6 +106,22 @@ namespace ul::menu::ui {
             pu::ui::SigmoidIncrementer<u32> entries_base_swipe_neg_offset_incr;
             u32 extra_entry_swipe_show_h_count;
 
+            // ---- NX Dash: shelf mode (curved row of game cases) ----
+            static constexpr bool ShelfMode = true;
+            double shelf_s = 0.0;
+            s32 shelf_target = 0;
+            bool shelf_synced = false;
+            u32 shelf_hold_frames = 0;
+            std::vector<u32> shelf_valid;
+            std::vector<pu::sdl2::Texture> shelf_title_texts;
+            std::vector<double> shelf_xs;
+            double shelf_xs_u = 0.0;
+            void ShelfRebuildValid();
+            void ShelfClearTitles();
+            void ShelfMove(const s32 dir);
+            void ShelfRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y);
+            void ShelfInput(const u64 keys_down, const u64 keys_held);
+
             inline bool IsNotInSwipe() {
                 return this->swipe_mode == SwipeMode::None;
             }
