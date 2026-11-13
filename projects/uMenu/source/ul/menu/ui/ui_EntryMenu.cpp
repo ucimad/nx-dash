@@ -1,3 +1,4 @@
+#include <ul/menu/ui/ui_NxDashSession.hpp>
 #include <ul/menu/ui/ui_EntryMenu.hpp>
 #include <algorithm>
 #include <functional>
@@ -1800,6 +1801,8 @@ namespace ul::menu::ui {
         this->sheet_title = nullptr;
         this->sheet_meta = nullptr;
         this->sheet_badge = nullptr;
+        pu::ui::render::DeleteTexture(this->sheet_time);
+        this->sheet_time = nullptr;
         this->sheet_hint = nullptr;
     }
 
@@ -1869,6 +1872,9 @@ namespace ul::menu::ui {
             this->sheet_meta = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), meta, white);
         }
         this->sheet_badge = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), "EN PAUSA", white);
+        if(const auto played = session::GetSeconds(); played >= 0) {
+            this->sheet_time = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), session::Format(played), white);
+        }
         this->sheet_hint = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), "A  Elegir        B  Biblioteca        HOME  Volver al juego", white);
 
         this->sheet_actions = { static_cast<u32>(SheetAction::Resume), static_cast<u32>(SheetAction::Close), static_cast<u32>(SheetAction::Album), static_cast<u32>(SheetAction::Library) };
@@ -1964,6 +1970,10 @@ namespace ul::menu::ui {
         // Coming back from a game with HOME: show the game sheet first
         if(!this->sheet_checked) {
             this->sheet_checked = true;
+            if(g_GlobalSettings.IsSuspended()) {
+                // Time in the menu does not count
+                session::Pause();
+            }
             if(g_GlobalSettings.IsSuspended() && HasScreenCaptureBackground()) {
                 this->SheetOpen();
             }
@@ -2026,6 +2036,7 @@ namespace ul::menu::ui {
             const auto bh = pu::ui::render::GetTextureHeight(this->sheet_badge);
             FillRR(drawer, { ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, (s32)ty, bw + 28, bh + 12, (bh + 12) / 2);
             drawer->RenderTexture(this->sheet_badge, (s32)cx0 + 14, (s32)ty + 6, pu::ui::render::TextureRenderOptions(alpha(255.0), {}, {}, {}, {}, {}));
+            RenderTextFit(drawer, this->sheet_time, cx0 + bw + 28.0 + 18.0, (s32)ty + 6, colw - (bw + 46.0), alpha(190.0), false);
         }
         RenderTextFit(drawer, this->sheet_title, cx0, (s32)(ty + 62.0), colw, alpha(255.0), false);
         RenderTextFit(drawer, this->sheet_meta, cx0, (s32)(ty + 128.0), colw, alpha(165.0), false);

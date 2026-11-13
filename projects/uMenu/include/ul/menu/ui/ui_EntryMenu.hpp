@@ -220,6 +220,7 @@ namespace ul::menu::ui {
             pu::sdl2::Texture sheet_title = nullptr;
             pu::sdl2::Texture sheet_meta = nullptr;
             pu::sdl2::Texture sheet_badge = nullptr;
+            pu::sdl2::Texture sheet_time = nullptr;
             pu::sdl2::Texture sheet_hint = nullptr;
             std::vector<ShelfHit> sheet_hits;
             bool sheet_touching = false;

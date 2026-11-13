@@ -1,3 +1,4 @@
+#include <ul/menu/ui/ui_NxDashSession.hpp>
 #include <ul/menu/ui/ui_BackgroundScreenCapture.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 
@@ -119,6 +120,7 @@ namespace ul::menu::ui {
             case SuspendedImageMode::HidingForResume: {
                 if(g_ScreenCaptureBackgroundAlpha == 0xFF) {
                     g_ScreenCaptureBackground->SetAlpha(g_ScreenCaptureBackgroundAlpha);
+                    session::Resume();
                     UL_RC_ASSERT(smi::ResumeApplication());
                 }
                 else {

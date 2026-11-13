@@ -1,3 +1,4 @@
+#include <ul/menu/ui/ui_NxDashSession.hpp>
 #include <ul/menu/ui/ui_MainMenuLayout.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 #include <ul/fs/fs_Stdio.hpp>
@@ -239,6 +240,7 @@ namespace ul::menu::ui {
                                 g_MenuApplication->FadeOutToNonLibraryApplet();
                                 const auto rc = smi::LaunchApplication(cur_entry.app_info.app_id);
                                 if(R_SUCCEEDED(rc)) {
+                                    session::Start();
                                     g_MenuApplication->Finalize();
                                     return;
                                 }
@@ -640,6 +642,7 @@ namespace ul::menu::ui {
             g_MenuApplication->FadeOutToNonLibraryApplet();
             const auto rc = smi::LaunchHomebrewApplication(ipt.nro_path, ipt.nro_argv);
             if(R_SUCCEEDED(rc)) {
+                session::Start();
                 g_MenuApplication->Finalize();
                 return;
             }
@@ -1199,6 +1202,7 @@ namespace ul::menu::ui {
         }
 
         UL_RC_ASSERT(smi::TerminateApplication());
+        session::Clear();
 
         if(i < entries.size()) {
             // We need to reload the application record since its kind/type changed after closing it
