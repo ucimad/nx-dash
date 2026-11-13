@@ -237,7 +237,7 @@ namespace ul::menu::ui {
                             else {
                                 pu::audio::PlaySfx(this->launch_app_sfx);
 
-                                g_MenuApplication->FadeOutToNonLibraryApplet();
+                                this->PlayLaunchTransition();
                                 const auto rc = smi::LaunchApplication(cur_entry.app_info.app_id);
                                 if(R_SUCCEEDED(rc)) {
                                     session::Start(cur_entry.app_info.app_id);
@@ -245,6 +245,7 @@ namespace ul::menu::ui {
                                     return;
                                 }
                                 else {
+                                    this->entry_menu->ResetLaunchAnim();
                                     g_MenuApplication->FadeIn();
                                     g_MenuApplication->ResetFade();
                                     g_MenuApplication->ShowNotification(GetLanguageString("app_launch_error") + ": " + util::FormatResultDisplay(rc));
@@ -639,7 +640,7 @@ namespace ul::menu::ui {
             
             const auto ipt = CreateLaunchTargetInput(hb_entry.hb_info.nro_target);
 
-            g_MenuApplication->FadeOutToNonLibraryApplet();
+            this->PlayLaunchTransition();
             const auto rc = smi::LaunchHomebrewApplication(ipt.nro_path, ipt.nro_argv);
             if(R_SUCCEEDED(rc)) {
                 session::Start();
@@ -647,6 +648,7 @@ namespace ul::menu::ui {
                 return;
             }
             else {
+                this->entry_menu->ResetLaunchAnim();
                 g_MenuApplication->FadeIn();
                 g_MenuApplication->ResetFade();
                 g_MenuApplication->ShowNotification(GetLanguageString("app_launch_error") + ": " + util::FormatResultDisplay(rc));
@@ -1276,6 +1278,15 @@ namespace ul::menu::ui {
         this->entry_menu->NotifyEntryRemoved(entry);
         this->entry_menu->OrganizeUpdateEntries();
         g_MenuApplication->ShowNotification("Categoría \"" + name + "\" creada");
+    }
+
+    void MainMenuLayout::PlayLaunchTransition() {
+        // The cover flies into the screen and everything ends on black; only then the game is asked to start
+        this->entry_menu->StartLaunchAnim();
+        while(this->entry_menu->IsLaunchAnimRunning()) {
+            g_MenuApplication->CallForRender();
+        }
+        g_MenuApplication->FinishTransitionOnBlack();
     }
 
 }

@@ -118,6 +118,23 @@ namespace ul::menu::ui {
 
         InitializeScreenCaptures(this->start_mode);
 
+        if(g_GlobalSettings.IsSuspended() && HasScreenCaptureBackground()) {
+            // NX Dash: coming back from a game with HOME. The rest of the load takes most of a second, so put the
+            // game image (slightly dimmed) on screen right now instead of leaving it black until the first real frame
+            auto sdl = pu::ui::render::GetMainRenderer();
+            auto capture = GetScreenCaptureBackground()->GetTexture();
+            if((sdl != nullptr) && (capture != nullptr)) {
+                SDL_SetRenderDrawColor(sdl, 0, 0, 0, 0xFF);
+                SDL_RenderClear(sdl);
+                SDL_SetTextureAlphaMod(capture, 0xFF);
+                SDL_RenderCopy(sdl, capture, nullptr, nullptr);
+                SDL_SetRenderDrawBlendMode(sdl, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(sdl, 0x06, 0x07, 0x0B, 110);
+                SDL_RenderFillRect(sdl, nullptr);
+                SDL_RenderPresent(sdl);
+            }
+        }
+
         _LOG_SOFAR("done screen capture buffers");
 
         // BGM

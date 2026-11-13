@@ -92,6 +92,15 @@ namespace ul::menu::ui {
 
             // TODO: custom fades for homebrew?
 
+            // NX Dash: the launch transition already ended on black, so just pin that state (a couple of frames)
+            inline void FinishTransitionOnBlack() {
+                this->SetFadeBackgroundColor(GetDefaultFadeColor());
+                this->SetFadeAlphaIncrementStepCount(2);
+                this->FadeOut();
+                appletUpdateCallerAppletCaptureImage();
+                appletClearCaptureBuffer(true, AppletCaptureSharedBuffer_CallerApplet, GetColorARGB(GetDefaultFadeColor()));
+            }
+
             inline void FadeOutToNonLibraryApplet() {
                 this->FadeOutToColor(GetDefaultFadeColor());
             }

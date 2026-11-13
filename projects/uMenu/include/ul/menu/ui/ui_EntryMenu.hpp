@@ -210,6 +210,14 @@ namespace ul::menu::ui {
             void ShelfClearInfo();
             void ShelfRenderInfo(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y);
 
+            // ---- NX Dash: launch transition ----
+            double launch_t = -1.0;
+            double launch_cx = 0.0;
+            double launch_cy = 0.0;
+            double launch_s = 0.0;
+            pu::sdl2::TextureHandle::Ref launch_icon = nullptr;
+            bool sheet_intro_dim = false;
+
             // ---- NX Dash: HOME game sheet ----
             bool sheet_checked = false;
             bool sheet_open = false;
@@ -355,6 +363,19 @@ namespace ul::menu::ui {
 
             void RenderOverlay(pu::ui::render::Renderer::Ref &drawer);
             void RenderBackdrop(pu::ui::render::Renderer::Ref &drawer);
+            void RenderLaunch(pu::ui::render::Renderer::Ref &drawer);
+
+            inline void StartLaunchAnim() {
+                this->launch_t = 0.0;
+            }
+
+            inline bool IsLaunchAnimRunning() {
+                return (this->launch_t >= 0.0) && (this->launch_t < 1.08);
+            }
+
+            inline void ResetLaunchAnim() {
+                this->launch_t = -1.0;
+            }
 
             inline bool IsMenuStart() {
                 return this->base_entry_idx_x == 0;
@@ -431,6 +452,7 @@ namespace ul::menu::ui {
             inline s32 GetHeight() override { return pu::ui::render::ScreenHeight; }
             void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) override {
                 this->menu->RenderOverlay(drawer);
+                this->menu->RenderLaunch(drawer);
             }
             void OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) override {}
     };

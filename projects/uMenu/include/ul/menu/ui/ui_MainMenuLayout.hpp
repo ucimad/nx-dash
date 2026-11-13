@@ -138,6 +138,7 @@ namespace ul::menu::ui {
 
             void MoveTo(const std::string &new_path, const bool fade, std::function<void()> action = nullptr);
 
+            void PlayLaunchTransition();
             void ShelfMoveEntryToCategory(Entry &entry);
             void ShelfNewCategoryWithEntry(Entry &entry);
 

@@ -1274,6 +1274,10 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::ShelfInput(const u64 keys_down, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
+        if(this->launch_t >= 0.0) {
+            // Launch transition running
+            return;
+        }
         if(this->sheet_open) {
             this->SheetInput(keys_down, touch_pos);
             return;
@@ -1334,8 +1338,8 @@ namespace ul::menu::ui {
         }
 
         const auto nv = (s32)this->shelf_valid.size();
-        const auto left_down = keys_down & HidNpadButton_Left;
-        const auto right_down = keys_down & HidNpadButton_Right;
+        const auto left_down = keys_down & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
+        const auto right_down = keys_down & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
         this->shelf_held = this->shelf_hold_frames > 27;
         const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
         const auto right_held = keys_held & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
@@ -1586,6 +1590,12 @@ namespace ul::menu::ui {
                     drawer->RenderRectangleFill({ 0x08, 0x09, 0x10, (u8)(a * 0.50) }, (s32)in_x, (s32)in_y, (s32)in_w, (s32)in_h);
                     const auto art = in_w * 0.86;
                     drawer->RenderTexture(icon->Get(), (s32)(in_x + (in_w - art) / 2.0), (s32)(in_y + (in_h - art) / 2.0), pu::ui::render::TextureRenderOptions(a, (s32)art, (s32)art, {}, {}, {}));
+                    if((it.pos == target_pos) && (this->launch_t < 0.0)) {
+                        this->launch_cx = in_x + in_w / 2.0;
+                        this->launch_cy = in_y + in_h / 2.0;
+                        this->launch_s = art;
+                        this->launch_icon = icon;
+                    }
                     // The printed sleeve sits behind clear plastic: inner shadow on two sides and a fixed band of gloss
                     drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(a * 0.40) }, (s32)in_x, (s32)in_y, (s32)in_w, 2);
                     drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(a * 0.30) }, (s32)in_x, (s32)in_y, 2, (s32)in_h);
@@ -1949,6 +1959,7 @@ namespace ul::menu::ui {
         }
 
         this->sheet_sel = 0;
+        this->sheet_intro_dim = true;
         this->sheet_sel_y = -1.0;
         this->sheet_anim = 0.0;
         this->sheet_open = true;
@@ -2091,6 +2102,13 @@ namespace ul::menu::ui {
         else {
             drawer->RenderRectangleFill({ 0x1C, 0x1E, 0x28, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
         }
+        if(this->sheet_intro_dim && this->sheet_open) {
+            // The first thing shown after HOME is the game image dimmed; it brightens as it settles into the panel
+            drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, (u8)(110.0 * (1.0 - a)) }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
+        }
+        else {
+            this->sheet_intro_dim = false;
+        }
         RenderTextFit(drawer, this->sheet_hint, tx, (s32)(ty + th + 44.0), tw, alpha(150.0), false);
 
         // Right column: badge, title, details, options
@@ -2213,6 +2231,47 @@ namespace ul::menu::ui {
         if(g_FadeUp != nullptr) {
             drawer->RenderTexture(g_FadeUp, 0, sh - 420, pu::ui::render::TextureRenderOptions(0xB4, sw, 420, {}, {}, {}));
         }
+    }
+
+    // ---- Launch transition: the cover flies into the screen, light passes over it, everything ends on black ----
+
+    void EntryMenu::RenderLaunch(pu::ui::render::Renderer::Ref &drawer) {
+        if(this->launch_t < 0.0) {
+            return;
+        }
+        if(this->launch_t < 2.0) {
+            this->launch_t += this->fx_dt / 0.95;
+        }
+        const auto t = this->launch_t;
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+
+        // The library falls away
+        drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(255.0 * SmoothStep(t / 0.30)) }, 0, 0, sw, sh);
+
+        if((this->launch_icon != nullptr) && (this->launch_icon->Get() != nullptr) && (this->launch_s > 1.0)) {
+            const auto c = std::clamp(t / 0.62, 0.0, 1.0);
+            // Slow start, hard acceleration: reads as diving into the cover
+            const auto p = c * c * c * (c * (6.0 * c - 15.0) + 10.0);
+            const auto size = this->launch_s + ((double)sw * 1.10 - this->launch_s) * p;
+            const auto px = this->launch_cx + ((double)sw / 2.0 - this->launch_cx) * p;
+            const auto py = this->launch_cy + ((double)sh / 2.0 - this->launch_cy) * p;
+            drawer->RenderTexture(this->launch_icon->Get(), (s32)(px - size / 2.0), (s32)(py - size / 2.0), pu::ui::render::TextureRenderOptions(0xFF, (s32)size, (s32)size, {}, {}, {}));
+            drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(70.0 * p) }, 0, 0, sw, sh);
+        }
+
+        // A band of light crosses the screen while the cover grows
+        EnsureShapes();
+        if((g_Sheen != nullptr) && (t > 0.16) && (t < 0.70)) {
+            const auto q = (t - 0.16) / 0.54;
+            const auto band_w = (double)sw * 0.55;
+            const auto band_h = (double)sh * 1.7;
+            const auto bx = -band_w + ((double)sw + band_w) * SmoothStep(q);
+            drawer->RenderTexture(g_Sheen, (s32)bx, (s32)(((double)sh - band_h) / 2.0), pu::ui::render::TextureRenderOptions((u8)(120.0 * std::sin(M_PI * q)), (s32)band_w, (s32)band_h, 18.0f, {}, {}));
+        }
+
+        // ...and out to black, which is where the game picks up
+        drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(255.0 * SmoothStep((t - 0.58) / 0.34)) }, 0, 0, sw, sh);
     }
 
 }
