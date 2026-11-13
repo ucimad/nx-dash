@@ -3,6 +3,8 @@
 #include <switch.h>
 #include <cstdio>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 // NX Dash: time played in the current game session.
 // Counts only while the game is in the foreground: time in the menu is excluded, and the clock used
@@ -38,9 +40,56 @@ namespace ul::menu::ui::session {
         }
     }
 
-    // A game was just launched
-    inline void Start() {
+    // ---- Last games played (most recent first, at most 3) ----
+
+    constexpr const char RecentPath[] = "sdmc:/ulaunch/nxdash_recent.bin";
+    constexpr size_t RecentMax = 3;
+
+    inline std::vector<u64> &Recents() {
+        static std::vector<u64> recents;
+        static bool loaded = false;
+        if(!loaded) {
+            loaded = true;
+            auto f = fopen(RecentPath, "rb");
+            if(f != nullptr) {
+                u64 id = 0;
+                while((recents.size() < RecentMax) && (fread(&id, sizeof(id), 1, f) == 1)) {
+                    if(id != 0) {
+                        recents.push_back(id);
+                    }
+                }
+                fclose(f);
+            }
+        }
+        return recents;
+    }
+
+    inline bool IsRecent(const u64 app_id) {
+        const auto &recents = Recents();
+        return std::find(recents.begin(), recents.end(), app_id) != recents.end();
+    }
+
+    inline void PushRecent(const u64 app_id) {
+        if(app_id == 0) {
+            return;
+        }
+        auto &recents = Recents();
+        recents.erase(std::remove(recents.begin(), recents.end(), app_id), recents.end());
+        recents.insert(recents.begin(), app_id);
+        if(recents.size() > RecentMax) {
+            recents.resize(RecentMax);
+        }
+        auto f = fopen(RecentPath, "wb");
+        if(f != nullptr) {
+            fwrite(recents.data(), sizeof(u64), recents.size(), f);
+            fclose(f);
+        }
+    }
+
+    // A game was just launched (app_id 0 = homebrew, not tracked as recent)
+    inline void Start(const u64 app_id = 0) {
         Save({ Magic, 0, armGetSystemTick() });
+        PushRecent(app_id);
     }
 
     // Going back into the suspended game

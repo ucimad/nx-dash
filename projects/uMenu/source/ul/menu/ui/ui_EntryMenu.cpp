@@ -873,6 +873,9 @@ namespace ul::menu::ui {
         constexpr pu::ui::Color ShelfCaseColor = { 0xD3, 0x24, 0x1C, 0xFF };
         constexpr pu::ui::Color ShelfLabelColor = { 0xF4, 0xF2, 0xEE, 0xFF };
         constexpr pu::ui::Color ShelfTitleColor = { 0x14, 0x14, 0x14, 0xFF };
+        // Last three games played / the game that is running right now
+        constexpr pu::ui::Color ShelfRecentColor = { 0x6C, 0x3F, 0xD8, 0xFF };
+        constexpr pu::ui::Color ShelfActiveColor = { 0xE9, 0xB3, 0x3C, 0xFF };
 
         // Pre-rendered shapes: gfx rounded boxes are drawn line by line and were the main per-frame cost
         SDL_Texture *g_Corners[4] = {};
@@ -880,6 +883,7 @@ namespace ul::menu::ui {
         SDL_Texture *g_Sheen = nullptr;
         SDL_Texture *g_FadeDown = nullptr;
         SDL_Texture *g_FadeUp = nullptr;
+        SDL_Texture *g_GlossDown = nullptr;
         bool g_ShapesReady = false;
 
         SDL_Texture *MakeAlphaTexture(const s32 w, const s32 h, const std::function<double(s32, s32)> &alpha_fn, const u8 gray) {
@@ -937,6 +941,10 @@ namespace ul::menu::ui {
                 const auto v = (py + 0.5) / 64.0;
                 return v * v;
             }, 0x06);
+            g_GlossDown = MakeAlphaTexture(4, 64, [](const s32, const s32 py) {
+                const auto v = 1.0 - (py + 0.5) / 64.0;
+                return v * v;
+            }, 0xFF);
             g_Sheen = MakeAlphaTexture(96, 4, [](const s32 px, const s32) {
                 const auto dx = ((px + 0.5) - 48.0) / 48.0;
                 const auto v = std::max(0.0, 1.0 - dx * dx);
@@ -1480,6 +1488,7 @@ namespace ul::menu::ui {
         }
 
         u32 loads_left = 2;
+        const auto any_suspended = g_GlobalSettings.IsSuspended();
 
         for(const auto &it : items) {
             const auto r = it.r;
@@ -1528,10 +1537,24 @@ namespace ul::menu::ui {
                 FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.92) }, (s32)ex - 2, (s32)ey - 2, (s32)case_w + 4, (s32)case_h + 4, radius + 2);
             }
 
-            // Case body
-            FillRR(drawer, { ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, (u8)(255.0 * fade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
-            if(case_w > 2.0 * radius + 4.0) {
-                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(90.0 * fade) }, (s32)ex + radius, (s32)ey + 1, (s32)case_w - 2 * radius, 1);
+            // Case body: red by default, violet for the last games played, shiny gold for the one running now
+            const auto is_active = any_suspended && g_GlobalSettings.IsEntrySuspended(entry);
+            const auto is_recent = !is_active && entry.Is<EntryType::Application>() && session::IsRecent(entry.app_info.app_id);
+            const auto case_clr = is_active ? ShelfActiveColor : (is_recent ? ShelfRecentColor : ShelfCaseColor);
+            FillRR(drawer, { case_clr.r, case_clr.g, case_clr.b, (u8)(255.0 * fade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
+            {
+                // Moulded plastic: light from above, darker towards the floor, a bevel on top and a lip at the bottom
+                const auto inset = (s32)(radius * 0.4);
+                if(g_GlossDown != nullptr) {
+                    drawer->RenderTexture(g_GlossDown, (s32)ex + inset, (s32)ey, pu::ui::render::TextureRenderOptions((u8)((is_active ? 96.0 : 46.0) * fade), (s32)case_w - 2 * inset, (s32)(case_h * 0.45), {}, {}, {}));
+                }
+                if(g_FadeUp != nullptr) {
+                    drawer->RenderTexture(g_FadeUp, (s32)ex + inset, (s32)(ey + case_h * 0.5), pu::ui::render::TextureRenderOptions((u8)(84.0 * fade), (s32)case_w - 2 * inset, (s32)(case_h * 0.5), {}, {}, {}));
+                }
+                if(case_w > 2.0 * radius + 4.0) {
+                    drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(96.0 * fade) }, (s32)ex + radius, (s32)ey + 1, (s32)case_w - 2 * radius, 1);
+                    drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(70.0 * fade) }, (s32)ex + radius, (s32)(ey + case_h) - 2, (s32)case_w - 2 * radius, 2);
+                }
             }
 
             if(o > 0.35) {
@@ -1543,6 +1566,17 @@ namespace ul::menu::ui {
                 const auto in_y = ey + band;
                 const auto in_w = case_w - 2.0 * pad;
                 const auto in_h = case_h - band - pad;
+                {
+                    // Front of the case: hinge groove down the left edge, a small brand mark on the top band
+                    const auto hinge_x = ex + case_w * 0.032;
+                    const auto hinge_w = std::max(2.0, case_w * 0.012);
+                    drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(a * 0.30) }, (s32)hinge_x, (s32)ey + radius, (s32)hinge_w, (s32)case_h - 2 * radius);
+                    drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(a * 0.22) }, (s32)(hinge_x + hinge_w), (s32)ey + radius, 1, (s32)case_h - 2 * radius);
+                    const auto mark = band * 0.42;
+                    const auto mark_y = ey + (band - mark) / 2.0 + 1.0;
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(a * 0.92) }, (s32)in_x, (s32)mark_y, (s32)mark, (s32)mark, (s32)(mark * 0.28));
+                    drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(a * 0.70) }, (s32)(in_x + mark * 1.35), (s32)(mark_y + mark * 0.36), (s32)(mark * 2.4), (s32)std::max(2.0, mark * 0.28));
+                }
                 if((icon != nullptr) && (in_w > 4.0) && (in_h > 4.0)) {
                     // Full-bleed sleeve: the icon blown up behind (cropped to the sleeve, dimmed), the sharp icon on top
                     const SDL_Rect clip = { (s32)in_x, (s32)in_y, (s32)in_w, (s32)in_h };
@@ -1552,6 +1586,14 @@ namespace ul::menu::ui {
                     drawer->RenderRectangleFill({ 0x08, 0x09, 0x10, (u8)(a * 0.50) }, (s32)in_x, (s32)in_y, (s32)in_w, (s32)in_h);
                     const auto art = in_w * 0.86;
                     drawer->RenderTexture(icon->Get(), (s32)(in_x + (in_w - art) / 2.0), (s32)(in_y + (in_h - art) / 2.0), pu::ui::render::TextureRenderOptions(a, (s32)art, (s32)art, {}, {}, {}));
+                    // The printed sleeve sits behind clear plastic: inner shadow on two sides and a fixed band of gloss
+                    drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(a * 0.40) }, (s32)in_x, (s32)in_y, (s32)in_w, 2);
+                    drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(a * 0.30) }, (s32)in_x, (s32)in_y, 2, (s32)in_h);
+                    if(g_Sheen != nullptr) {
+                        SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), &clip);
+                        drawer->RenderTexture(g_Sheen, (s32)(in_x - in_w * 0.10), (s32)(in_y - in_h * 0.25), pu::ui::render::TextureRenderOptions((u8)(a * 0.11), (s32)(in_w * 0.50), (s32)(in_h * 1.5), 18.0f, {}, {}));
+                        SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), nullptr);
+                    }
                 }
             }
             else {
@@ -1596,6 +1638,29 @@ namespace ul::menu::ui {
                         const auto tcy = label_y + label_h / 2.0;
                         drawer->RenderTexture(title_tex, (s32)(tcx - dw / 2.0), (s32)(tcy - dh / 2.0), pu::ui::render::TextureRenderOptions(a, (s32)dw, (s32)dh, 90.0f, {}, {}));
                     }
+                }
+            }
+
+            if(o <= 0.35) {
+                // Spine: rounded edges read darker than the middle
+                const auto edge_w = std::max(1.0, case_w * 0.10);
+                const auto edge_a = (u8)(58.0 * fade);
+                drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, edge_a }, (s32)ex, (s32)ey + radius, (s32)edge_w, (s32)case_h - 2 * radius);
+                drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, edge_a }, (s32)(ex + case_w - edge_w), (s32)ey + radius, (s32)edge_w, (s32)case_h - 2 * radius);
+            }
+
+            // The running game keeps catching the light
+            if(is_active && (g_Sheen != nullptr)) {
+                const auto t = std::fmod(this->fx_time, 2.6);
+                if(t < 1.0) {
+                    const auto q = SmoothStep(t);
+                    const auto band_w = std::max(case_w * 0.7, 26.0);
+                    const auto band_h = case_h * 1.5;
+                    const auto bx = ex - band_w + (case_w + band_w) * q;
+                    const SDL_Rect clip = { (s32)ex + 1, (s32)ey + 1, (s32)case_w - 2, (s32)case_h - 2 };
+                    SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), &clip);
+                    drawer->RenderTexture(g_Sheen, (s32)bx, (s32)(ey + (case_h - band_h) / 2.0), pu::ui::render::TextureRenderOptions((u8)(120.0 * fade * std::sin(M_PI * t)), (s32)band_w, (s32)band_h, 18.0f, {}, {}));
+                    SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), nullptr);
                 }
             }
 

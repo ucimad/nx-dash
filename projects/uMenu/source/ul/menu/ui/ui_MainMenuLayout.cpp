@@ -240,7 +240,7 @@ namespace ul::menu::ui {
                                 g_MenuApplication->FadeOutToNonLibraryApplet();
                                 const auto rc = smi::LaunchApplication(cur_entry.app_info.app_id);
                                 if(R_SUCCEEDED(rc)) {
-                                    session::Start();
+                                    session::Start(cur_entry.app_info.app_id);
                                     g_MenuApplication->Finalize();
                                     return;
                                 }
