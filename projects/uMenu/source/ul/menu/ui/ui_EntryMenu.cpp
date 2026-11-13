@@ -1538,9 +1538,19 @@ namespace ul::menu::ui {
                 const auto a = (u8)(255.0 * fade * std::min(1.0, (o - 0.35) / 0.4));
                 const auto pad = case_w * 0.06;
                 const auto band = case_h * 0.075;
-                const auto art = std::min(case_w - 2.0 * pad, case_h - band - 2.0 * pad);
-                if(icon != nullptr) {
-                    drawer->RenderTexture(icon->Get(), (s32)(ex + (case_w - art) / 2.0), (s32)(ey + band + pad), pu::ui::render::TextureRenderOptions(a, (s32)art, (s32)art, {}, {}, {}));
+                const auto in_x = ex + pad;
+                const auto in_y = ey + band;
+                const auto in_w = case_w - 2.0 * pad;
+                const auto in_h = case_h - band - pad;
+                if((icon != nullptr) && (in_w > 4.0) && (in_h > 4.0)) {
+                    // Full-bleed sleeve: the icon blown up behind (cropped to the sleeve, dimmed), the sharp icon on top
+                    const SDL_Rect clip = { (s32)in_x, (s32)in_y, (s32)in_w, (s32)in_h };
+                    SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), &clip);
+                    drawer->RenderTexture(icon->Get(), (s32)(in_x + (in_w - in_h) / 2.0), (s32)in_y, pu::ui::render::TextureRenderOptions(a, (s32)in_h, (s32)in_h, {}, {}, {}));
+                    SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), nullptr);
+                    drawer->RenderRectangleFill({ 0x08, 0x09, 0x10, (u8)(a * 0.50) }, (s32)in_x, (s32)in_y, (s32)in_w, (s32)in_h);
+                    const auto art = in_w * 0.86;
+                    drawer->RenderTexture(icon->Get(), (s32)(in_x + (in_w - art) / 2.0), (s32)(in_y + (in_h - art) / 2.0), pu::ui::render::TextureRenderOptions(a, (s32)art, (s32)art, {}, {}, {}));
                 }
             }
             else {
@@ -2067,9 +2077,13 @@ namespace ul::menu::ui {
         if(has_focus && (((s32)this->cur_entry_idx != this->amb_idx) || (this->cur_path != this->amb_path))) {
             auto icon = this->entry_icons.at(this->cur_entry_idx);
             if((icon != nullptr) && (icon->Get() != nullptr)) {
-                // 256px icon -> 32x18: the downscale is the blur, the upscale smooths it
-                auto tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 32, 18);
-                if((tex == nullptr) || (SDL_SetRenderTarget(renderer, tex) != 0)) {
+                // 256px icon -> 32x18 -> 8x5: the two downscales are the blur, the upscale smooths it into a wash of color
+                auto mid = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 32, 18);
+                auto tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 8, 5);
+                if((mid == nullptr) || (tex == nullptr) || (SDL_SetRenderTarget(renderer, mid) != 0)) {
+                    if(mid != nullptr) {
+                        SDL_DestroyTexture(mid);
+                    }
                     if(tex != nullptr) {
                         SDL_DestroyTexture(tex);
                     }
@@ -2081,7 +2095,11 @@ namespace ul::menu::ui {
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0xFF);
                 SDL_RenderClear(renderer);
                 SDL_RenderCopy(renderer, icon->Get(), nullptr, nullptr);
+                SDL_SetRenderTarget(renderer, tex);
+                SDL_RenderClear(renderer);
+                SDL_RenderCopy(renderer, mid, nullptr, nullptr);
                 SDL_SetRenderTarget(renderer, nullptr);
+                SDL_DestroyTexture(mid);
                 SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
 
                 if(this->amb_prev != nullptr) {
@@ -2097,7 +2115,7 @@ namespace ul::menu::ui {
 
         this->amb_fade = std::min(1.0, this->amb_fade + this->fx_dt / 0.37);
         const auto f = SmoothStep(this->amb_fade);
-        const double strength = 118.0;
+        const double strength = 100.0;
         const s32 sw = pu::ui::render::ScreenWidth;
         const s32 sh = pu::ui::render::ScreenHeight;
         // Oversized so the soft edges of the tiny texture stay off screen
