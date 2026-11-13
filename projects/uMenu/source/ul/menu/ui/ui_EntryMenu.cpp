@@ -877,6 +877,8 @@ namespace ul::menu::ui {
         SDL_Texture *g_Corners[4] = {};
         SDL_Texture *g_SoftShadow = nullptr;
         SDL_Texture *g_Sheen = nullptr;
+        SDL_Texture *g_FadeDown = nullptr;
+        SDL_Texture *g_FadeUp = nullptr;
         bool g_ShapesReady = false;
 
         SDL_Texture *MakeAlphaTexture(const s32 w, const s32 h, const std::function<double(s32, s32)> &alpha_fn, const u8 gray) {
@@ -925,6 +927,15 @@ namespace ul::menu::ui {
                 const auto d2 = dx * dx + dy * dy;
                 return (d2 >= 1.0) ? 0.0 : (1.0 - d2) * (1.0 - d2);
             }, 0x00);
+            // Vertical scrims: a hard-edged band would show as a line across the ambient light
+            g_FadeDown = MakeAlphaTexture(4, 64, [](const s32, const s32 py) {
+                const auto v = 1.0 - (py + 0.5) / 64.0;
+                return v * v;
+            }, 0x06);
+            g_FadeUp = MakeAlphaTexture(4, 64, [](const s32, const s32 py) {
+                const auto v = (py + 0.5) / 64.0;
+                return v * v;
+            }, 0x06);
             g_Sheen = MakeAlphaTexture(96, 4, [](const s32 px, const s32) {
                 const auto dx = ((px + 0.5) - 48.0) / 48.0;
                 const auto v = std::max(0.0, 1.0 - dx * dx);
@@ -2101,8 +2112,13 @@ namespace ul::menu::ui {
             drawer->RenderTexture(this->amb_cur, ox, oy, pu::ui::render::TextureRenderOptions((u8)(strength * f), ow, oh, {}, {}, {}));
         }
         // Keep the top and bottom calm so the bars and text stay readable
-        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, 0x50 }, 0, 0, sw, 150);
-        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, 0x66 }, 0, sh - 260, sw, 260);
+        EnsureShapes();
+        if(g_FadeDown != nullptr) {
+            drawer->RenderTexture(g_FadeDown, 0, 0, pu::ui::render::TextureRenderOptions(0x8C, sw, 300, {}, {}, {}));
+        }
+        if(g_FadeUp != nullptr) {
+            drawer->RenderTexture(g_FadeUp, 0, sh - 420, pu::ui::render::TextureRenderOptions(0xB4, sw, 420, {}, {}, {}));
+        }
     }
 
 }
