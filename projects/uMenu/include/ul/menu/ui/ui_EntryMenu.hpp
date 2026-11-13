@@ -5,6 +5,7 @@
 #include <ul/util/util_Enum.hpp>
 #include <pu/Plutonium>
 #include <map>
+#include <cmath>
 
 namespace ul::menu::ui {
 
@@ -165,6 +166,23 @@ namespace ul::menu::ui {
             std::map<std::string, s32> shelf_cat_pos;
             double shelf_vy = 0.0;
             double shelf_press = 0.0;
+
+            // ---- NX Dash: motion (time based, so it stays even if a frame is dropped) ----
+            u64 fx_last_tick = 0;
+            double fx_dt = 1.0 / 60.0;
+            double fx_k = 1.0;
+            double fx_time = 0.0;
+            double shelf_intro = 0.0;
+            double shelf_intro_dir = 1.0;
+            double shelf_sheen = 1.0;
+            bool shelf_sheen_pending = true;
+            bool tab_hl_init = false;
+            double tab_hl_x = 0.0;
+            double tab_hl_w = 0.0;
+            double sheet_sel_y = -1.0;
+            inline double FxApproach(const double cur, const double target, const double rate) {
+                return cur + (target - cur) * (1.0 - std::pow(1.0 - rate, this->fx_k));
+            }
 
             // ---- NX Dash: ambient light from the focused cover ----
             SDL_Texture *amb_cur = nullptr;

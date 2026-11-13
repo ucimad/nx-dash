@@ -1,5 +1,6 @@
 #include <ul/menu/ui/ui_EntryMenu.hpp>
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <ul/menu/ui/ui_MainMenuLayout.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
@@ -872,12 +873,97 @@ namespace ul::menu::ui {
         constexpr pu::ui::Color ShelfLabelColor = { 0xF4, 0xF2, 0xEE, 0xFF };
         constexpr pu::ui::Color ShelfTitleColor = { 0x14, 0x14, 0x14, 0xFF };
 
+        // Pre-rendered shapes: gfx rounded boxes are drawn line by line and were the main per-frame cost
+        SDL_Texture *g_Corners[4] = {};
+        SDL_Texture *g_SoftShadow = nullptr;
+        SDL_Texture *g_Sheen = nullptr;
+        bool g_ShapesReady = false;
+
+        SDL_Texture *MakeAlphaTexture(const s32 w, const s32 h, const std::function<double(s32, s32)> &alpha_fn, const u8 gray) {
+            auto surface = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_RGBA32);
+            if(surface == nullptr) {
+                return nullptr;
+            }
+            SDL_LockSurface(surface);
+            for(s32 py = 0; py < h; py++) {
+                auto row = reinterpret_cast<u8*>(surface->pixels) + py * surface->pitch;
+                for(s32 px = 0; px < w; px++) {
+                    row[px * 4 + 0] = gray;
+                    row[px * 4 + 1] = gray;
+                    row[px * 4 + 2] = gray;
+                    row[px * 4 + 3] = (u8)std::clamp(alpha_fn(px, py) * 255.0, 0.0, 255.0);
+                }
+            }
+            SDL_UnlockSurface(surface);
+            auto tex = SDL_CreateTextureFromSurface(pu::ui::render::GetMainRenderer(), surface);
+            SDL_FreeSurface(surface);
+            if(tex != nullptr) {
+                SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            }
+            return tex;
+        }
+
+        void EnsureShapes() {
+            if(g_ShapesReady) {
+                return;
+            }
+            g_ShapesReady = true;
+            constexpr s32 R = 48;
+            for(s32 c = 0; c < 4; c++) {
+                // Circle centre sits on the inner corner of each quadrant
+                const double ccx = ((c == 0) || (c == 2)) ? (double)R : 0.0;
+                const double ccy = (c < 2) ? (double)R : 0.0;
+                g_Corners[c] = MakeAlphaTexture(R, R, [&](const s32 px, const s32 py) {
+                    const auto dx = (px + 0.5) - ccx;
+                    const auto dy = (py + 0.5) - ccy;
+                    return (double)R - std::sqrt(dx * dx + dy * dy) + 0.5;
+                }, 0xFF);
+            }
+            g_SoftShadow = MakeAlphaTexture(128, 48, [](const s32 px, const s32 py) {
+                const auto dx = ((px + 0.5) - 64.0) / 64.0;
+                const auto dy = ((py + 0.5) - 24.0) / 24.0;
+                const auto d2 = dx * dx + dy * dy;
+                return (d2 >= 1.0) ? 0.0 : (1.0 - d2) * (1.0 - d2);
+            }, 0x00);
+            g_Sheen = MakeAlphaTexture(96, 4, [](const s32 px, const s32) {
+                const auto dx = ((px + 0.5) - 48.0) / 48.0;
+                const auto v = std::max(0.0, 1.0 - dx * dx);
+                return v * v;
+            }, 0xFF);
+        }
+
+        // Rounded box: four textured corners + three plain fills
+        void FillRR(pu::ui::render::Renderer::Ref &drawer, const pu::ui::Color clr, const s32 x, const s32 y, const s32 w, const s32 h, const s32 radius) {
+            if((w <= 0) || (h <= 0) || (clr.a == 0)) {
+                return;
+            }
+            EnsureShapes();
+            const auto r = std::min({ radius, w / 2, h / 2 });
+            if((r <= 2) || (g_Corners[0] == nullptr) || (g_Corners[1] == nullptr) || (g_Corners[2] == nullptr) || (g_Corners[3] == nullptr)) {
+                drawer->RenderRectangleFill(clr, x, y, w, h);
+                return;
+            }
+            const s32 xs[4] = { x, x + w - r, x, x + w - r };
+            const s32 ys[4] = { y, y, y + h - r, y + h - r };
+            for(s32 c = 0; c < 4; c++) {
+                SDL_SetTextureColorMod(g_Corners[c], clr.r, clr.g, clr.b);
+                drawer->RenderTexture(g_Corners[c], xs[c], ys[c], pu::ui::render::TextureRenderOptions(clr.a, r, r, {}, {}, {}));
+            }
+            if(w > 2 * r) {
+                drawer->RenderRectangleFill(clr, x + r, y, w - 2 * r, r);
+                drawer->RenderRectangleFill(clr, x + r, y + h - r, w - 2 * r, r);
+            }
+            if(h > 2 * r) {
+                drawer->RenderRectangleFill(clr, x, y + r, w, h - 2 * r);
+            }
+        }
+
         // Fake "liquid glass" (no realtime blur here): bright rim, tinted body, specular line on top
         inline void RenderGlass(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y, const s32 w, const s32 h, const s32 r, const double k, const u8 body_alpha) {
             const auto a = [&](const double v) { return (u8)std::clamp(v * k, 0.0, 255.0); };
-            drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, a(64.0) }, x - 1, y - 1, w + 2, h + 2, r + 1);
-            drawer->RenderRoundedRectangleFill({ 0x14, 0x16, 0x1E, a((double)body_alpha) }, x, y, w, h, r);
-            drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, a(16.0) }, x, y, w, h, r);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, a(64.0) }, x - 1, y - 1, w + 2, h + 2, r + 1);
+            FillRR(drawer, { 0x14, 0x16, 0x1E, a((double)body_alpha) }, x, y, w, h, r);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, a(16.0) }, x, y, w, h, r);
             if(w > 2 * r + 8) {
                 drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, a(70.0) }, x + r, y + 1, w - 2 * r, 1);
             }
@@ -1079,7 +1165,9 @@ namespace ul::menu::ui {
         }
 
         const auto cat = this->shelf_cats.at(idx);
-        this->shelf_vy = (idx_raw > this->shelf_cat) ? 1.0 : -1.0;
+        this->shelf_intro = 0.0;
+        this->shelf_intro_dir = (idx_raw > this->shelf_cat) ? 1.0 : -1.0;
+        this->shelf_sheen_pending = true;
         this->cur_entry_change_started_cb();
 
         while(!this->entry_idx_stack.empty()) {
@@ -1140,6 +1228,7 @@ namespace ul::menu::ui {
         else {
             this->shelf_target += dir;
         }
+        this->shelf_sheen_pending = true;
         const auto pos = ((this->shelf_target % nv) + nv) % nv;
         this->cur_entry_change_started_cb();
         this->SetFocusedEntryIndex(this->shelf_valid.at(pos));
@@ -1276,10 +1365,7 @@ namespace ul::menu::ui {
         const auto nv = (s32)this->shelf_valid.size();
 
         // Category change slide
-        this->shelf_vy *= 0.80;
-        if(std::abs(this->shelf_vy) < 0.002) {
-            this->shelf_vy = 0.0;
-        }
+        this->shelf_intro += this->fx_dt;
 
         this->ShelfRenderInfo(drawer, x, y);
         if(nv == 0) {
@@ -1288,14 +1374,14 @@ namespace ul::menu::ui {
             }
             const auto tw = pu::ui::render::GetTextureWidth(this->shelf_empty_text);
             const auto th = pu::ui::render::GetTextureHeight(this->shelf_empty_text);
-            drawer->RenderTexture(this->shelf_empty_text, x + (this->GetWidth() - tw) / 2, y + (s32)(this->GetHeight() * 0.45) - th / 2 + (s32)(this->shelf_vy * 160.0));
+            drawer->RenderTexture(this->shelf_empty_text, x + (this->GetWidth() - tw) / 2, y + (s32)(this->GetHeight() * 0.45) - th / 2);
             this->shelf_hits.clear();
             return;
         }
 
         // Ease towards the target (continuous position, so wrapping around stays smooth)
-        this->shelf_s += ((double)this->shelf_target - this->shelf_s) * (this->shelf_held ? 0.42 : 0.20);
-        this->shelf_press *= 0.80;
+        this->shelf_s = this->FxApproach(this->shelf_s, (double)this->shelf_target, this->shelf_held ? 0.42 : 0.20);
+        this->shelf_press *= std::pow(0.80, this->fx_k);
         if(this->shelf_press < 0.01) {
             this->shelf_press = 0.0;
         }
@@ -1311,7 +1397,7 @@ namespace ul::menu::ui {
         const double gap = H * 0.014;
         const double U = H * 1.3;
         const double cx = (double)x + area_w / 2.0;
-        const double cy = (double)y + area_h * 0.45 + this->shelf_vy * 160.0;
+        const double cy = (double)y + area_h * 0.45;
 
         // Pre-computed integral of the scale curve: far cases pack tighter on screen
         if(this->shelf_xs.empty() || (this->shelf_xs_u != U)) {
@@ -1357,8 +1443,31 @@ namespace ul::menu::ui {
         this->shelf_hits.clear();
         this->shelf_step_px = ws + gap;
 
-        // Soft floor shadow under the focused case
-        drawer->RenderShadowSimple((s32)(cx - d * 0.9), (s32)(cy + H / 2.0 - 6.0), (s32)(d * 1.8), 18, 120, 0xFF);
+        EnsureShapes();
+        const auto target_pos = ((this->shelf_target % nv) + nv) % nv;
+        const auto settled = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 4.0, 0.0, 1.0);
+        const auto intro_of = [&](const double r) {
+            const auto p = std::clamp((this->shelf_intro - std::min(std::abs(r), 8.0) * 0.03) / 0.30, 0.0, 1.0);
+            return 1.0 - (1.0 - p) * (1.0 - p) * (1.0 - p);
+        };
+
+        // Sheen: one pass of light over the cover once it has settled
+        if(this->shelf_sheen_pending && (settled > 0.9) && (this->shelf_intro > 0.25)) {
+            this->shelf_sheen_pending = false;
+            this->shelf_sheen = 0.0;
+        }
+        if(this->shelf_sheen < 1.0) {
+            this->shelf_sheen = std::min(1.0, this->shelf_sheen + this->fx_dt / 0.75);
+        }
+
+        // Soft floor shadow under the focused case: grows as the case lifts
+        if(g_SoftShadow != nullptr) {
+            const auto sh_w = d * (1.55 + 0.25 * settled);
+            const auto sh_h = H * 0.085;
+            drawer->RenderTexture(g_SoftShadow, (s32)(cx - sh_w / 2.0), (s32)(cy + H / 2.0 - sh_h * 0.42), pu::ui::render::TextureRenderOptions((u8)(150.0 * intro_of(0.0)), (s32)sh_w, (s32)sh_h, {}, {}, {}));
+        }
+
+        u32 loads_left = 2;
 
         for(const auto &it : items) {
             const auto r = it.r;
@@ -1370,17 +1479,25 @@ namespace ul::menu::ui {
 
             const auto sc = scl(u);
             // Pressed: the focused case dips to 0.97
-            const auto press_k = 1.0 - 0.03 * this->shelf_press * o;
+            // Focused: lifts 4.5% and floats a little; pressed: dips to 0.97
+            const auto press_k = (1.0 - 0.03 * this->shelf_press * o) * (1.0 + 0.045 * o);
             const auto case_w = (ws + (d - ws) * o) * sc * press_k;
             const auto case_h = H * sc * press_k;
             const auto sink = H * 0.5 * (1.0 - sc) * 0.42;
+            const auto fade = intro_of(r);
+            const auto bob = std::sin(this->fx_time * (2.0 * M_PI / 4.5)) * 3.0 * o * settled;
             const auto ex = cx + xsc(u) - case_w / 2.0;
-            const auto ey = cy - case_h / 2.0 + sink - o * H * 0.02;
+            const auto ey = cy - case_h / 2.0 + sink - o * H * 0.02 + bob + (1.0 - fade) * 46.0 * this->shelf_intro_dir;
+            if((fade <= 0.004) || (ex + case_w < (double)x - 24.0) || (ex > (double)x + area_w + 24.0)) {
+                continue;
+            }
 
             const auto entry_idx = this->shelf_valid.at(it.pos);
             auto &entry = this->cur_entries.at(entry_idx);
             pu::sdl2::TextureHandle::Ref icon = (entry_idx < this->entry_icons.size()) ? this->entry_icons.at(entry_idx) : nullptr;
-            if((icon == nullptr) && this->pending_load_img_done && entry.Is<EntryType::Application>()) {
+            if((icon == nullptr) && this->pending_load_img_done && entry.Is<EntryType::Application>() && (loads_left > 0)) {
+                // At most two loads per frame, so a fresh shelf never stalls a frame
+                loads_left--;
                 icon = LoadApplicationIconTexture(entry.app_info.app_id);
                 if(icon != nullptr) {
                     entry.TryLoadNacp();
@@ -1393,21 +1510,21 @@ namespace ul::menu::ui {
 
             // Focus ring
             if(o > 0.6) {
-                const auto ring = (u8)(255.0 * (o - 0.6) / 0.4);
-                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(ring * 0.10) }, (s32)ex - 14, (s32)ey - 14, (s32)case_w + 28, (s32)case_h + 28, radius + 13);
-                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(ring * 0.16) }, (s32)ex - 8, (s32)ey - 8, (s32)case_w + 16, (s32)case_h + 16, radius + 7);
-                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(ring * 0.92) }, (s32)ex - 2, (s32)ey - 2, (s32)case_w + 4, (s32)case_h + 4, radius + 2);
+                const auto ring = (u8)(255.0 * fade * (o - 0.6) / 0.4);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.10) }, (s32)ex - 14, (s32)ey - 14, (s32)case_w + 28, (s32)case_h + 28, radius + 13);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.16) }, (s32)ex - 8, (s32)ey - 8, (s32)case_w + 16, (s32)case_h + 16, radius + 7);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.92) }, (s32)ex - 2, (s32)ey - 2, (s32)case_w + 4, (s32)case_h + 4, radius + 2);
             }
 
             // Case body
-            drawer->RenderRoundedRectangleFill(ShelfCaseColor, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
+            FillRR(drawer, { ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, (u8)(255.0 * fade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
             if(case_w > 2.0 * radius + 4.0) {
-                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, 0x5A }, (s32)ex + radius, (s32)ey + 1, (s32)case_w - 2 * radius, 1);
+                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, (u8)(90.0 * fade) }, (s32)ex + radius, (s32)ey + 1, (s32)case_w - 2 * radius, 1);
             }
 
             if(o > 0.35) {
                 // Cover: the icon as key art inside the case frame
-                const auto a = (u8)(255.0 * std::min(1.0, (o - 0.35) / 0.4));
+                const auto a = (u8)(255.0 * fade * std::min(1.0, (o - 0.35) / 0.4));
                 const auto pad = case_w * 0.06;
                 const auto band = case_h * 0.075;
                 const auto art = std::min(case_w - 2.0 * pad, case_h - band - 2.0 * pad);
@@ -1417,7 +1534,7 @@ namespace ul::menu::ui {
             }
             else {
                 // Spine: white label, small icon on top, vertical title
-                const auto a = (u8)(255.0 * std::min(1.0, (0.35 - o) / 0.35 + 0.0001));
+                const auto a = (u8)(255.0 * fade * std::min(1.0, (0.35 - o) / 0.35 + 0.0001));
                 const auto lw = case_w * 0.74;
                 const auto lx = ex + (case_w - lw) / 2.0;
                 const auto icon_s = lw;
@@ -1432,7 +1549,8 @@ namespace ul::menu::ui {
 
                     // Title texture, created once per entry at full size and scaled down
                     auto &title_tex = this->shelf_title_texts.at(entry_idx);
-                    if(title_tex == nullptr) {
+                    if((title_tex == nullptr) && (loads_left > 0)) {
+                        loads_left--;
                         std::string name;
                         if(entry.Is<EntryType::Folder>()) {
                             name = entry.folder_info.name;
@@ -1460,9 +1578,21 @@ namespace ul::menu::ui {
             }
 
             // Depth shading: further cases get darker
-            const auto shade = std::min(0.72, o * 0.0 + (1.0 - sc) * 0.62) * (1.0 - o);
+            // Sheen over the focused cover
+            if((it.pos == target_pos) && (this->shelf_sheen < 1.0) && (g_Sheen != nullptr) && (o > 0.9)) {
+                const auto q = SmoothStep(this->shelf_sheen);
+                const auto band_w = case_w * 0.55;
+                const auto band_h = case_h * 1.5;
+                const auto bx = ex - band_w + (case_w + band_w) * q;
+                const SDL_Rect clip = { (s32)ex + 2, (s32)ey + 2, (s32)case_w - 4, (s32)case_h - 4 };
+                SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), &clip);
+                drawer->RenderTexture(g_Sheen, (s32)bx, (s32)(ey + (case_h - band_h) / 2.0), pu::ui::render::TextureRenderOptions((u8)(70.0 * std::sin(M_PI * this->shelf_sheen)), (s32)band_w, (s32)band_h, 18.0f, {}, {}));
+                SDL_RenderSetClipRect(pu::ui::render::GetMainRenderer(), nullptr);
+            }
+
+            const auto shade = fade * std::min(0.72, (1.0 - sc) * 0.62) * (1.0 - o);
             if(shade > 0.01) {
-                drawer->RenderRoundedRectangleFill({ 0x05, 0x06, 0x0E, (u8)(255.0 * shade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
+                FillRR(drawer, { 0x05, 0x06, 0x0E, (u8)(255.0 * shade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
             }
         }
     }
@@ -1574,17 +1704,24 @@ namespace ul::menu::ui {
                 const auto cap_r = std::min(tx + total - 14 + 8, x + (s32)area_w - 60);
                 RenderGlass(drawer, cap_x, ty - 8, cap_r - cap_x, th + 16, (th + 16) / 2, 1.0, 120);
             }
+            {
+                // The highlight slides between tabs instead of jumping
+                const auto hl_x = (double)(tx + cur_left);
+                const auto hl_w = (double)(cur_right - cur_left);
+                if(!this->tab_hl_init) {
+                    this->tab_hl_init = true;
+                    this->tab_hl_x = hl_x;
+                    this->tab_hl_w = hl_w;
+                }
+                this->tab_hl_x = this->FxApproach(this->tab_hl_x, hl_x, 0.26);
+                this->tab_hl_w = this->FxApproach(this->tab_hl_w, hl_w, 0.26);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, 0x3C }, (s32)this->tab_hl_x, ty, (s32)this->tab_hl_w, th, th / 2);
+                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, 0x50 }, (s32)this->tab_hl_x + th / 2, ty + 1, (s32)this->tab_hl_w - th, 1);
+            }
             for(u32 i = 0; i < this->shelf_cats.size(); i++) {
                 const auto w = widths.at(i);
                 const auto is_cur = (s32)i == this->shelf_cat;
                 if((tx + w > x) && (tx < x + (s32)area_w)) {
-                    if(is_cur) {
-                        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, 0x3C }, tx, ty, w, th, th / 2);
-                        drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, 0x50 }, tx + th / 2, ty + 1, w - th, 1);
-                    }
-                    else {
-                        // Quiet: no chip for the rest, just dimmer text
-                    }
                     auto tex = this->shelf_tab_texts.at(i);
                     const auto tth = pu::ui::render::GetTextureHeight(tex);
                     drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions(is_cur ? 0xFF : 0x8C, {}, {}, {}, {}, {}));
@@ -1621,9 +1758,11 @@ namespace ul::menu::ui {
         const auto settle = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 2.5, 0.0, 1.0);
         const auto cx = (double)x + area_w / 2.0;
         const auto ty = y + (s32)(area_h * 0.815);
-        RenderTextFit(drawer, this->shelf_info_title, cx, ty, area_w - 260.0, (u8)(255.0 * settle), true);
+        const auto travel = std::clamp((double)this->shelf_target - this->shelf_s, -1.0, 1.0) * 34.0;
+        const auto intro = std::clamp((this->shelf_intro - 0.08) / 0.30, 0.0, 1.0);
+        RenderTextFit(drawer, this->shelf_info_title, cx + travel, ty, area_w - 260.0, (u8)(255.0 * settle * intro), true);
         const auto settle_late = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 6.0, 0.0, 1.0);
-        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 70 + (s32)((1.0 - settle_late) * 8.0), area_w - 260.0, (u8)(150.0 * settle_late), true);
+        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 70 + (s32)((1.0 - settle_late) * 8.0), area_w - 260.0, (u8)(150.0 * settle_late * intro), true);
     }
 
     // ---- HOME game sheet ----
@@ -1718,6 +1857,7 @@ namespace ul::menu::ui {
         }
 
         this->sheet_sel = 0;
+        this->sheet_sel_y = -1.0;
         this->sheet_anim = 0.0;
         this->sheet_open = true;
     }
@@ -1809,7 +1949,7 @@ namespace ul::menu::ui {
         }
 
         const auto target = this->sheet_open ? 1.0 : 0.0;
-        this->sheet_anim += (target - this->sheet_anim) * (this->sheet_open ? 0.20 : 0.26);
+        this->sheet_anim = this->FxApproach(this->sheet_anim, target, this->sheet_open ? 0.20 : 0.26);
         if(std::abs(target - this->sheet_anim) < 0.003) {
             this->sheet_anim = target;
         }
@@ -1847,7 +1987,7 @@ namespace ul::menu::ui {
         const auto ry = ty * a;
         const auto rw = sw + (tw - sw) * a;
         const auto rh = sh + (th - sh) * a;
-        drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(90.0) }, (s32)rx - 2, (s32)ry - 2, (s32)rw + 4, (s32)rh + 4, 10);
+        FillRR(drawer, { 0xFF, 0xFF, 0xFF, alpha(90.0) }, (s32)rx - 2, (s32)ry - 2, (s32)rw + 4, (s32)rh + 4, 10);
         auto capture = GetScreenCaptureBackground()->GetTexture();
         if(capture != nullptr) {
             drawer->RenderTexture(capture, (s32)rx, (s32)ry, pu::ui::render::TextureRenderOptions(0xFF, (s32)rw, (s32)rh, {}, {}, {}));
@@ -1863,7 +2003,7 @@ namespace ul::menu::ui {
         if(this->sheet_badge != nullptr) {
             const auto bw = pu::ui::render::GetTextureWidth(this->sheet_badge);
             const auto bh = pu::ui::render::GetTextureHeight(this->sheet_badge);
-            drawer->RenderRoundedRectangleFill({ ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, (s32)ty, bw + 28, bh + 12, (bh + 12) / 2);
+            FillRR(drawer, { ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, (s32)ty, bw + 28, bh + 12, (bh + 12) / 2);
             drawer->RenderTexture(this->sheet_badge, (s32)cx0 + 14, (s32)ty + 6, pu::ui::render::TextureRenderOptions(alpha(255.0), {}, {}, {}, {}, {}));
         }
         RenderTextFit(drawer, this->sheet_title, cx0, (s32)(ty + 62.0), colw, alpha(255.0), false);
@@ -1874,14 +2014,22 @@ namespace ul::menu::ui {
         const s32 row_h = 76;
         const s32 row_gap = 12;
         s32 oy = (s32)(ty + 210.0);
+        {
+            // The selection glides between rows
+            const auto sel_y = (double)(oy + this->sheet_sel * (row_h + row_gap));
+            if(this->sheet_sel_y < 0.0) {
+                this->sheet_sel_y = sel_y;
+            }
+            this->sheet_sel_y = this->FxApproach(this->sheet_sel_y, sel_y, 0.30);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, alpha(46.0) }, (s32)cx0, (s32)this->sheet_sel_y, (s32)colw, row_h, 18);
+        }
         for(u32 i = 0; i < this->sheet_opt_texts.size(); i++) {
             const auto sel = (s32)i == this->sheet_sel;
-            if(sel) {
-                drawer->RenderRoundedRectangleFill({ 0xFF, 0xFF, 0xFF, alpha(46.0) }, (s32)cx0, oy, (s32)colw, row_h, 18);
-            }
+            // Rows arrive one after another
+            const auto row_p = SmoothStep(std::clamp(this->sheet_anim * 1.7 - 0.25 - (double)i * 0.11, 0.0, 1.0));
             auto tex = this->sheet_opt_texts.at(i);
             const auto tth = pu::ui::render::GetTextureHeight(tex);
-            drawer->RenderTexture(tex, (s32)cx0 + 28, oy + (row_h - tth) / 2, pu::ui::render::TextureRenderOptions(alpha(sel ? 255.0 : 150.0), {}, {}, {}, {}, {}));
+            drawer->RenderTexture(tex, (s32)cx0 + 28 + (s32)((1.0 - row_p) * 22.0), oy + (row_h - tth) / 2, pu::ui::render::TextureRenderOptions((u8)((sel ? 255.0 : 150.0) * row_p * (this->sheet_open ? 1.0 : a)), {}, {}, {}, {}, {}));
             this->sheet_hits.insert(this->sheet_hits.begin(), { (s32)i, (s32)cx0, oy, (s32)colw, row_h });
             oy += row_h + row_gap;
         }
@@ -1890,6 +2038,15 @@ namespace ul::menu::ui {
     // ---- Ambient light: the focused cover, blurred down to a wash of color behind the glass ----
 
     void EntryMenu::RenderBackdrop(pu::ui::render::Renderer::Ref &drawer) {
+        {
+            const auto now = armGetSystemTick();
+            if(this->fx_last_tick != 0) {
+                this->fx_dt = std::clamp((double)armTicksToNs(now - this->fx_last_tick) / 1e9, 1.0 / 240.0, 1.0 / 12.0);
+            }
+            this->fx_last_tick = now;
+            this->fx_k = this->fx_dt * 60.0;
+            this->fx_time += this->fx_dt;
+        }
         if(!ShelfMode || this->amb_failed) {
             return;
         }
@@ -1927,7 +2084,7 @@ namespace ul::menu::ui {
             }
         }
 
-        this->amb_fade = std::min(1.0, this->amb_fade + 0.045);
+        this->amb_fade = std::min(1.0, this->amb_fade + this->fx_dt / 0.37);
         const auto f = SmoothStep(this->amb_fade);
         const double strength = 118.0;
         const s32 sw = pu::ui::render::ScreenWidth;
