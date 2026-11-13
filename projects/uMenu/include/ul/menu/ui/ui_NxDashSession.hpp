@@ -43,7 +43,9 @@ namespace ul::menu::ui::session {
     // ---- Last games played (most recent first, at most 3) ----
 
     constexpr const char RecentPath[] = "sdmc:/ulaunch/nxdash_recent.bin";
-    constexpr size_t RecentMax = 3;
+    constexpr size_t RecentMax = 5;
+    // Only the newest few get the violet case
+    constexpr size_t RecentHighlight = 3;
 
     inline std::vector<u64> &Recents() {
         static std::vector<u64> recents;
@@ -64,9 +66,16 @@ namespace ul::menu::ui::session {
         return recents;
     }
 
-    inline bool IsRecent(const u64 app_id) {
+    // Position in the recent list (0 = last played), or -1
+    inline s32 RecentRank(const u64 app_id) {
         const auto &recents = Recents();
-        return std::find(recents.begin(), recents.end(), app_id) != recents.end();
+        const auto it = std::find(recents.begin(), recents.end(), app_id);
+        return (it == recents.end()) ? -1 : (s32)(it - recents.begin());
+    }
+
+    inline bool IsRecent(const u64 app_id) {
+        const auto rank = RecentRank(app_id);
+        return (rank >= 0) && (rank < (s32)RecentHighlight);
     }
 
     inline void PushRecent(const u64 app_id) {

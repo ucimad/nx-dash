@@ -148,7 +148,7 @@ namespace ul::menu::ui {
             void ShelfMoveToPos(const s32 pos);
 
             // ---- NX Dash: category shelves (Up/Down) ----
-            enum class ShelfFilter : u32 { Games, Folder, Homebrew, System };
+            enum class ShelfFilter : u32 { Games, Folder, Homebrew, System, Recent };
             struct ShelfCategory {
                 std::string name;
                 std::string path;
@@ -163,6 +163,7 @@ namespace ul::menu::ui {
             std::vector<std::pair<std::string, std::string>> shelf_root_folders;
             bool shelf_root_has_hb = false;
             bool shelf_root_has_special = false;
+            bool shelf_root_has_recent = false;
             std::map<std::string, s32> shelf_cat_pos;
             double shelf_vy = 0.0;
             double shelf_press = 0.0;

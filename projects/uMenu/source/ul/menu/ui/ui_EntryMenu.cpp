@@ -1016,6 +1016,13 @@ namespace ul::menu::ui {
             }
         }
 
+        if(this->IsInRoot() && (this->shelf_root_filter == ShelfFilter::Recent)) {
+            // Most recent first
+            std::stable_sort(this->shelf_valid.begin(), this->shelf_valid.end(), [&](const u32 a, const u32 b) {
+                return session::RecentRank(this->cur_entries.at(a).app_info.app_id) < session::RecentRank(this->cur_entries.at(b).app_info.app_id);
+            });
+        }
+
         if(this->shelf_title_texts.size() != this->cur_entries.size()) {
             this->ShelfClearTitles();
             this->shelf_title_texts.resize(this->cur_entries.size(), nullptr);
@@ -1076,6 +1083,8 @@ namespace ul::menu::ui {
                 return entry.Is<EntryType::Homebrew>();
             case ShelfFilter::System:
                 return entry.IsSpecial();
+            case ShelfFilter::Recent:
+                return entry.Is<EntryType::Application>() && (session::RecentRank(entry.app_info.app_id) >= 0);
             default:
                 return false;
         }
@@ -1103,7 +1112,11 @@ namespace ul::menu::ui {
             this->shelf_root_folders.clear();
             this->shelf_root_has_hb = false;
             this->shelf_root_has_special = false;
+            this->shelf_root_has_recent = false;
             for(const auto &entry : *root_entries) {
+                if(entry.Is<EntryType::Application>() && (session::RecentRank(entry.app_info.app_id) >= 0)) {
+                    this->shelf_root_has_recent = true;
+                }
                 if(entry.Is<EntryType::Folder>()) {
                     this->shelf_root_folders.push_back({ entry.folder_info.name, entry.GetFolderPath() });
                 }
@@ -1117,6 +1130,9 @@ namespace ul::menu::ui {
         }
 
         this->shelf_cats.clear();
+        if(this->shelf_root_has_recent) {
+            this->shelf_cats.push_back({ "Recientes", root, ShelfFilter::Recent });
+        }
         this->shelf_cats.push_back({ "Juegos", root, ShelfFilter::Games });
         for(const auto &[name, path] : this->shelf_root_folders) {
             this->shelf_cats.push_back({ name, path, ShelfFilter::Folder });
@@ -1130,6 +1146,9 @@ namespace ul::menu::ui {
 
         if(this->IsInRoot()) {
             if((this->shelf_root_filter == ShelfFilter::Homebrew) && !this->shelf_root_has_hb) {
+                this->shelf_root_filter = ShelfFilter::Games;
+            }
+            if((this->shelf_root_filter == ShelfFilter::Recent) && !this->shelf_root_has_recent) {
                 this->shelf_root_filter = ShelfFilter::Games;
             }
             if((this->shelf_root_filter == ShelfFilter::System) && !this->shelf_root_has_special) {
