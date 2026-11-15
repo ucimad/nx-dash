@@ -1562,7 +1562,8 @@ namespace ul::menu::ui {
 
             // Case body: red by default, violet for the last games played, shiny gold for the one running now
             const auto is_active = any_suspended && g_GlobalSettings.IsEntrySuspended(entry);
-            const auto is_recent = !is_active && entry.Is<EntryType::Application>() && session::IsRecent(entry.app_info.app_id);
+            // (The violet "recent" case was dropped once the Recientes shelf existed)
+            const auto is_recent = false;
             const auto case_clr = is_active ? ShelfActiveColor : (is_recent ? ShelfRecentColor : ShelfCaseColor);
             FillRR(drawer, { case_clr.r, case_clr.g, case_clr.b, (u8)(255.0 * fade) }, (s32)ex, (s32)ey, (s32)case_w, (s32)case_h, radius);
             {
