@@ -284,6 +284,7 @@ namespace ul::menu::ui {
             this->defer_last_idx = last_idx;
             this->defer_path = new_path;
             this->defer_frames = 0;
+            this->pending_load_img_done = true;
             UL_LOG_INFO("EntryMenu::Initialize deferred (fast HOME)");
             return;
         }
@@ -2675,9 +2676,10 @@ namespace ul::menu::ui {
         }
         if(!this->hap_init) {
             this->hap_init = true;
-            const auto rc1 = hidInitializeVibrationDevices(this->hap_handles, 2, HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld);
-            const auto rc2 = hidInitializeVibrationDevices(this->hap_handles + 2, 2, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyDual);
-            this->hap_ok = R_SUCCEEDED(rc1) && R_SUCCEEDED(rc2);
+            // Handheld rails and a detached pair are set up separately: either one working is enough
+            this->hap_sets[0] = R_SUCCEEDED(hidInitializeVibrationDevices(this->hap_handles, 2, HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld));
+            this->hap_sets[1] = R_SUCCEEDED(hidInitializeVibrationDevices(this->hap_handles + 2, 2, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyDual));
+            this->hap_ok = this->hap_sets[0] || this->hap_sets[1];
         }
         if(!this->hap_ok) {
             this->hap_queue.clear();
@@ -2686,14 +2688,18 @@ namespace ul::menu::ui {
         }
 
         const auto send = [&](const float amp, const float freq) {
-            HidVibrationValue values[4];
+            HidVibrationValue values[2];
             for(auto &value : values) {
                 value.amp_low = amp;
                 value.freq_low = freq;
                 value.amp_high = amp * 0.6f;
                 value.freq_high = freq * 2.0f;
             }
-            hidSendVibrationValues(this->hap_handles, values, 4);
+            for(u32 set = 0; set < 2; set++) {
+                if(this->hap_sets[set]) {
+                    hidSendVibrationValues(this->hap_handles + set * 2, values, 2);
+                }
+            }
         };
 
         for(auto it = this->hap_queue.begin(); it != this->hap_queue.end(); ) {

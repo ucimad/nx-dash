@@ -233,6 +233,7 @@ namespace ul::menu::ui {
             std::vector<Buzz> hap_queue;
             bool hap_init = false;
             bool hap_ok = false;
+            bool hap_sets[2] = {};
             HidVibrationDeviceHandle hap_handles[4] = {};
             double hap_off_at = -1.0;
             void Haptic(const float amp, const float freq, const double dur, const double delay = 0.0);
