@@ -946,7 +946,7 @@ namespace ul::menu::ui {
                 }
 
                 if(!this->entry_menu->IsAnySelected()) {
-                    this->input_bar->AddSetInput(HidNpadButton_Y, GetLanguageString("input_select_entry"));
+                    this->input_bar->AddSetInput(HidNpadButton_Y, nxdash::On("roulette") ? std::string("¿A qué juego?") : GetLanguageString("input_select_entry"));
                 }
 
                 if(this->entry_menu->IsAnySelected()) {
@@ -982,7 +982,7 @@ namespace ul::menu::ui {
                 this->input_bar->AddSetInput(InputBar::MetaHomeNpadButton, GetLanguageString("input_resume_suspended"));
             }
 
-            this->input_bar->AddSetInput(HidNpadButton_Plus | HidNpadButton_Minus, GetLanguageString("input_resize_menu"));
+            this->input_bar->AddSetInput(HidNpadButton_Minus, "Dorso de la caja");
 
             this->input_bar->AddSetInput(HidNpadButton_ZL | HidNpadButton_ZR, GetLanguageString("input_quick_menu"));
         }
@@ -1076,7 +1076,16 @@ namespace ul::menu::ui {
             ReloadApplicationEntryInfos(this->entry_menu->GetEntries());
         }
 
-        if(keys_down & HidNpadButton_Minus) {
+        if(nxdash::g_Modal && !(keys_down & HidNpadButton_Minus)) {
+            // An NX Dash overlay is up: nothing else here should react
+        }
+        else if(keys_down & (HidNpadButton_Minus | HidNpadButton_Plus)) {
+            // NX Dash: the shelf has no grid to resize; minus turns the focused case around instead
+            if((keys_down & HidNpadButton_Minus) && nxdash::On("flip")) {
+                this->entry_menu->ToggleFlip();
+            }
+        }
+        else if(keys_down & HidNpadButton_Minus) {
             if(!this->is_incrementing_decrementing && this->entry_menu->CanDecrementEntryHeightCount()) {
                 pu::audio::PlaySfx(this->menu_decrement_sfx);
                 this->is_incrementing_decrementing = true;
@@ -1098,7 +1107,15 @@ namespace ul::menu::ui {
         
     }
 
+    void MainMenuLayout::OnWake() {
+        this->entry_menu->OnWake();
+    }
+
     bool MainMenuLayout::OnHomeButtonPress() {
+        if(this->entry_menu->IsLockOpen()) {
+            // The lock screen is only left with its own three presses
+            return true;
+        }
         pu::audio::PlaySfx(this->home_press_sfx);
 
         if(g_GlobalSettings.IsSuspended()) {

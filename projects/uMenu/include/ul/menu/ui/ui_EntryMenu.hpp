@@ -5,6 +5,7 @@
 #include <ul/util/util_Enum.hpp>
 #include <pu/Plutonium>
 #include <map>
+#include <ul/nxdash/nxdash_Config.hpp>
 #include <cmath>
 
 namespace ul::menu::ui {
@@ -211,6 +212,155 @@ namespace ul::menu::ui {
             void ShelfClearInfo();
             void ShelfRenderInfo(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y);
 
+            // ---- NX Dash: fast HOME (the entry list is loaded after the pause sheet is already on screen) ----
+            bool defer_pending = false;
+            bool defer_used = false;
+            u32 defer_last_idx = 0;
+            std::string defer_path;
+            u32 defer_frames = 0;
+            void DeferredLoadNow();
+            void FocusSuspendedEntry();
+            void DescribeSuspended(std::string &out_title, std::string &out_meta);
+            void RenderSkeleton(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y);
+
+            // ---- NX Dash: rumble and extra sounds ----
+            struct Buzz {
+                double at;
+                double dur;
+                float amp;
+                float freq;
+            };
+            std::vector<Buzz> hap_queue;
+            bool hap_init = false;
+            bool hap_ok = false;
+            HidVibrationDeviceHandle hap_handles[4] = {};
+            double hap_off_at = -1.0;
+            void Haptic(const float amp, const float freq, const double dur, const double delay = 0.0);
+            void HapticUpdate();
+            pu::audio::Sfx nx_sfx[3] = {};
+            bool nx_sfx_loaded = false;
+            void NxSfx(const u32 which);
+
+            // ---- NX Dash: idle camera drift ----
+            double idle_t = 0.0;
+            bool saver_on = false;
+            double saver_step_t = 0.0;
+            double saver_fade = 0.0;
+            s32 saver_dir = 1;
+            s32 saver_saved_pos = 0;
+            void SaverStop();
+            void ShelfStepSilent(const s32 dir);
+
+            // ---- NX Dash: lock screen (after waking up on the menu) ----
+            bool lock_open = false;
+            double lock_anim = 0.0;
+            double lock_out = -1.0;
+            u64 lock_btn = 0;
+            u32 lock_count = 0;
+            double lock_last = 0.0;
+            double lock_pop = 0.0;
+            u64 lock_choice = 0;
+            float lock_bright = 0.5f;
+            s32 lock_vol = 0;
+            s32 lock_vol_max = 15;
+            u32 lock_audio_target = 0;
+            bool lock_lbl_ok = false;
+            bool lock_aud_ok = false;
+            bool lock_svc_init = false;
+            bool lock_font_ready = false;
+            std::string lock_time_str;
+            std::string lock_bt_str;
+            pu::sdl2::Texture lock_time_tex = nullptr;
+            pu::sdl2::Texture lock_date_tex = nullptr;
+            pu::sdl2::Texture lock_title_tex = nullptr;
+            pu::sdl2::Texture lock_played_tex = nullptr;
+            pu::sdl2::Texture lock_badge_tex = nullptr;
+            pu::sdl2::Texture lock_hint_tex = nullptr;
+            pu::sdl2::Texture lock_bt_tex = nullptr;
+            pu::sdl2::Texture lock_bt_sub_tex = nullptr;
+            pu::sdl2::Texture lock_ctl_texs[2] = {};
+            std::vector<pu::sdl2::Texture> lock_opt_texs;
+            std::vector<pu::sdl2::Texture> lock_key_texs;
+            std::vector<u64> lock_opt_keys;
+            std::vector<ShelfHit> lock_hits;
+            s32 lock_drag = -1;
+            bool lock_touching = false;
+            s32 lock_tx = 0;
+            s32 lock_ty = 0;
+            double lock_bt_poll = 0.0;
+            void LockFree();
+            void LockInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
+            void LockPress(const u64 key);
+            void LockBluetooth();
+            void LockSetBrightness(const float value);
+            void LockSetVolume(const s32 value);
+            void LockRefreshBluetooth(const bool force);
+            void RenderLock(pu::ui::render::Renderer::Ref &drawer);
+
+            // ---- NX Dash: the back of the case ----
+            bool flip_open = false;
+            double flip_anim = 0.0;
+            pu::sdl2::Texture flip_title = nullptr;
+            pu::sdl2::Texture flip_hint = nullptr;
+            pu::sdl2::Texture flip_chart_title = nullptr;
+            std::vector<pu::sdl2::Texture> flip_lines;
+            pu::sdl2::Texture flip_days[7] = {};
+            u32 flip_week[7] = {};
+            pu::sdl2::TextureHandle::Ref flip_icon = nullptr;
+            pu::ui::Color flip_clr = {};
+            std::vector<ShelfHit> flip_hits;
+            bool flip_touching = false;
+            s32 flip_tx = 0;
+            s32 flip_ty = 0;
+            void FlipFree();
+            void FlipInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
+            void RenderFlip(pu::ui::render::Renderer::Ref &drawer);
+
+            // ---- NX Dash: "which game?" duel (Y) ----
+            bool duel_open = false;
+            double duel_anim = 0.0;
+            double duel_spin = 1.0;
+            s32 duel_pos[2] = { -1, -1 };
+            s32 duel_show[2] = { -1, -1 };
+            s32 duel_sel = 0;
+            u32 duel_rolls = 0;
+            u32 duel_tick = 0;
+            double duel_tick_t = 0.0;
+            bool duel_tired = false;
+            pu::sdl2::Texture duel_title = nullptr;
+            pu::sdl2::Texture duel_hint = nullptr;
+            pu::sdl2::Texture duel_msg = nullptr;
+            pu::sdl2::Texture duel_vs = nullptr;
+            pu::sdl2::Texture duel_names[2] = {};
+            std::vector<ShelfHit> duel_hits;
+            bool duel_touching = false;
+            s32 duel_tx = 0;
+            s32 duel_ty = 0;
+            void DuelOpen();
+            void DuelRoll();
+            void DuelFree();
+            void DuelClose(const bool pick);
+            void DuelInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
+            void RenderDuel(pu::ui::render::Renderer::Ref &drawer);
+            pu::sdl2::TextureHandle::Ref IconForPos(const s32 pos, const bool load);
+
+            // ---- NX Dash: easter eggs ----
+            double domino_t = -1.0;
+            u32 rs_last_dir = 0;
+            u32 rs_steps = 0;
+            s32 rs_sign = 0;
+            double rs_last_t = 0.0;
+            bool tip_combo_down = false;
+            std::vector<s8> collector;
+            u32 collector_next = 0;
+            bool pdm_init = false;
+            bool pdm_ok = false;
+            u32 QueryLaunches(const Entry &entry, u64 *out_seconds = nullptr, s64 *out_last_posix = nullptr);
+
+            // ---- NX Dash: "12 / 68" position counter ----
+            pu::sdl2::Texture shelf_count_tex = nullptr;
+            s32 shelf_count_key = -1;
+
             // ---- NX Dash: launch transition ----
             double launch_t = -1.0;
             double launch_cx = 0.0;
@@ -366,6 +516,19 @@ namespace ul::menu::ui {
             void RenderBackdrop(pu::ui::render::Renderer::Ref &drawer);
             void RenderLaunch(pu::ui::render::Renderer::Ref &drawer);
 
+            void OnWake();
+            void OpenLock();
+            void ToggleFlip();
+            void RenderLayers(pu::ui::render::Renderer::Ref &drawer);
+
+            inline bool IsModalOpen() {
+                return this->sheet_open || this->lock_open || this->flip_open || this->duel_open || (this->launch_t >= 0.0);
+            }
+
+            inline bool IsLockOpen() {
+                return this->lock_open;
+            }
+
             inline void StartLaunchAnim() {
                 this->launch_t = 0.0;
             }
@@ -453,6 +616,7 @@ namespace ul::menu::ui {
             inline s32 GetHeight() override { return pu::ui::render::ScreenHeight; }
             void OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) override {
                 this->menu->RenderOverlay(drawer);
+                this->menu->RenderLayers(drawer);
                 this->menu->RenderLaunch(drawer);
             }
             void OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) override {}

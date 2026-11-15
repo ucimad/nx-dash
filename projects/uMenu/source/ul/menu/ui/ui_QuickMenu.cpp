@@ -1,3 +1,4 @@
+#include <ul/nxdash/nxdash_Config.hpp>
 #include <ul/menu/ui/ui_QuickMenu.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 #include <ul/cfg/cfg_Config.hpp>
@@ -117,6 +118,10 @@ namespace ul::menu::ui {
     }
 
     void QuickMenu::OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
+        // NX Dash: stay out of the way while an overlay owns the screen, and while L+R are held (secret tip combo)
+        if(!this->on && (ul::nxdash::g_Modal || ((keys_held & HidNpadButton_L) && (keys_held & HidNpadButton_R)))) {
+            return;
+        }
         if(this->on) {
             this->options_menu->OnInput(keys_down, keys_up, keys_held, touch_pos);
         }

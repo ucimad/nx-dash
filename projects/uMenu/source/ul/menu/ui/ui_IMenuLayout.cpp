@@ -39,6 +39,11 @@ namespace ul::menu::ui {
             }
     
             g_MenuApplication->StartPlayBgm();
+
+            // NX Dash: the menu woke up; its own lock screen takes over from here
+            if(!lockscreen_enabled && (g_MenuApplication->GetLoadedMenu() == MenuType::Main) && (g_MenuApplication->GetMainMenuLayout() != nullptr)) {
+                g_MenuApplication->GetMainMenuLayout()->OnWake();
+            }
         }
 
     }

@@ -1,4 +1,6 @@
 #include <ul/menu/menu_Entries.hpp>
+#include <ul/nxdash/nxdash_Config.hpp>
+#include <map>
 #include <ul/fs/fs_Stdio.hpp>
 #include <ul/util/util_String.hpp>
 #include <ul/util/util_Json.hpp>
@@ -10,6 +12,13 @@
 #include <ul/util/util_Scope.hpp>
 
 namespace ul::menu {
+
+    namespace {
+
+        // NX Dash entry cache (defined next to LoadEntries)
+        void DropEntryCacheFor(const std::string &entry_path);
+
+    }
 
     namespace {
 
@@ -390,6 +399,7 @@ namespace ul::menu {
         const auto new_idx = FindNextEntryIndex(new_folder_path);
         this->index = new_idx;
         const auto new_entry_path = MakeEntryPath(new_folder_path, new_idx);
+        DropEntryCacheFor(this->entry_path);
         fs::RenameFile(this->entry_path, new_entry_path);
         this->entry_path = new_entry_path;
 
@@ -403,6 +413,7 @@ namespace ul::menu {
             return false;
         }
 
+        DropEntryCacheFor(this->entry_path);
         fs::RenameFile(this->entry_path, new_entry_path);
         this->entry_path = new_entry_path;
         this->index = new_index;
@@ -458,10 +469,12 @@ namespace ul::menu {
                 break;
         }
 
+        DropEntryCacheFor(this->entry_path);
         util::SaveJSON(this->entry_path, entry_json);
     }
 
     std::vector<Entry> Entry::Remove() {
+        DropEntryCacheFor(this->entry_path);
         fs::DeleteFile(this->entry_path);
 
         if(this->Is<EntryType::Folder>()) {
@@ -497,14 +510,154 @@ namespace ul::menu {
         }
     }
 
-    std::vector<Entry> LoadEntries(const std::string &path) {
-        EnsureApplicationRecordsAndViews();
+    namespace {
 
-        std::vector<Entry> entries;
+        // ---- NX Dash: one cache file per menu folder instead of one small JSON file per entry ----
+        // Reading ~80 tiny files off the SD is most of what LoadEntries costs. The cache holds every entry's raw JSON
+        // keyed by file name; it is only trusted when the folder still lists exactly the same file names, and uMenu
+        // drops it whenever it saves, moves or removes an entry there.
+
+        constexpr const char EntryCacheDir[] = "sdmc:/ulaunch/nxdash_cache";
+        constexpr u32 EntryCacheMagic = 0x3143444E; // "NDC1"
+
+        std::string EntryCachePath(const std::string &path) {
+            u64 hash = 0xcbf29ce484222325ul;
+            for(const auto ch : path) {
+                hash = (hash ^ (u8)ch) * 0x100000001b3ul;
+            }
+            char name[64];
+            snprintf(name, sizeof(name), "%s/%016lx.bin", EntryCacheDir, hash);
+            return name;
+        }
+
+        u32 ApplicationRecordsHash() {
+            // Installing or deleting a game changes this, which retires every cache (an entry file name can be reused)
+            u32 hash = 0x811c9dc5 ^ (u32)g_ApplicationRecords.size();
+            for(const auto &rec : g_ApplicationRecords) {
+                hash = (hash ^ (u32)(rec.id & 0xFFFFFFFF)) * 0x01000193;
+                hash = (hash ^ (u32)(rec.id >> 32)) * 0x01000193;
+            }
+            return hash;
+        }
+
+        bool ReadEntryCache(const std::string &path, std::map<std::string, std::string> &out) {
+            auto f = fopen(EntryCachePath(path).c_str(), "rb");
+            if(f == nullptr) {
+                return false;
+            }
+            auto ok = false;
+            u32 header[3] = {};
+            if((fread(header, sizeof(header), 1, f) == 1) && (header[0] == EntryCacheMagic) && (header[1] < 4096) && (header[2] == ApplicationRecordsHash())) {
+                ok = true;
+                for(u32 i = 0; i < header[1]; i++) {
+                    u32 lens[2] = {};
+                    if((fread(lens, sizeof(lens), 1, f) != 1) || (lens[0] > 256) || (lens[1] > 0x10000)) {
+                        ok = false;
+                        break;
+                    }
+                    std::string name(lens[0], '\0');
+                    std::string json(lens[1], '\0');
+                    if(((lens[0] > 0) && (fread(name.data(), lens[0], 1, f) != 1)) || ((lens[1] > 0) && (fread(json.data(), lens[1], 1, f) != 1))) {
+                        ok = false;
+                        break;
+                    }
+                    out[name] = json;
+                }
+            }
+            fclose(f);
+            if(!ok) {
+                out.clear();
+            }
+            return ok;
+        }
+
+        void WriteEntryCache(const std::string &path, const std::map<std::string, std::string> &items) {
+            fs::EnsureCreateDirectory(std::string(EntryCacheDir));
+            auto f = fopen(EntryCachePath(path).c_str(), "wb");
+            if(f == nullptr) {
+                return;
+            }
+            const u32 header[3] = { EntryCacheMagic, (u32)items.size(), ApplicationRecordsHash() };
+            fwrite(header, sizeof(header), 1, f);
+            for(const auto &[name, json] : items) {
+                const u32 lens[2] = { (u32)name.length(), (u32)json.length() };
+                fwrite(lens, sizeof(lens), 1, f);
+                fwrite(name.data(), name.length(), 1, f);
+                fwrite(json.data(), json.length(), 1, f);
+            }
+            fclose(f);
+        }
+
+        void DropEntryCacheFor(const std::string &entry_path) {
+            remove(EntryCachePath(fs::GetBaseDirectory(entry_path)).c_str());
+        }
+
+        bool ReadWholeFile(const std::string &file_path, std::string &out) {
+            auto f = fopen(file_path.c_str(), "rb");
+            if(f == nullptr) {
+                return false;
+            }
+            fseek(f, 0, SEEK_END);
+            const auto size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            auto ok = (size >= 0) && (size <= 0x10000);
+            if(ok) {
+                out.resize(size);
+                ok = (size == 0) || (fread(out.data(), size, 1, f) == 1);
+            }
+            fclose(f);
+            return ok;
+        }
+
+    }
+
+    std::vector<Entry> LoadEntries(const std::string &path) {
+        const auto load_start = armGetSystemTick();
+        EnsureApplicationRecordsAndViews();
+        const auto records_done = armGetSystemTick();
+
+        // Which entry files does the folder hold right now?
+        std::vector<std::pair<std::string, std::string>> entry_files;
         UL_FS_FOR(path, entry_name, entry_path, is_dir, is_file, {
             if(is_file && util::StringEndsWith(entry_name, ".m.json")) {
-                util::JSON entry_json;
-                if(R_SUCCEEDED(util::LoadJSONFromFile(entry_json, entry_path))) {
+                entry_files.push_back({ entry_name, entry_path });
+            }
+        });
+
+        const auto use_cache = nxdash::On("cache");
+        std::map<std::string, std::string> cached;
+        auto cache_ok = use_cache && ReadEntryCache(path, cached) && (cached.size() == entry_files.size());
+        if(cache_ok) {
+            for(const auto &file : entry_files) {
+                if(cached.find(file.first) == cached.end()) {
+                    cache_ok = false;
+                    break;
+                }
+            }
+        }
+        if(!cache_ok) {
+            cached.clear();
+            for(const auto &file : entry_files) {
+                std::string text;
+                if(ReadWholeFile(file.second, text)) {
+                    cached[file.first] = text;
+                }
+            }
+            if(use_cache) {
+                WriteEntryCache(path, cached);
+            }
+        }
+        const auto files_done = armGetSystemTick();
+
+        std::vector<Entry> entries;
+        for(const auto &[entry_name, entry_path] : entry_files) {
+            {
+                const auto cached_it = cached.find(entry_name);
+                if(cached_it == cached.end()) {
+                    continue;
+                }
+                auto entry_json = util::JSON::parse(cached_it->second, nullptr, false);
+                if(!entry_json.is_discarded()) {
                     const auto type = static_cast<EntryType>(entry_json.value("type", static_cast<u32>(EntryType::Invalid)));
                     const auto entry_index_str = entry_name.substr(0, entry_name.length() - __builtin_strlen(".m.json"));
                     const u32 entry_index = std::strtoul(entry_index_str.c_str(), nullptr, 10);
@@ -624,8 +777,10 @@ namespace ul::menu {
                     }
                 }
             }
-        });
+        }
 
+        UL_LOG_INFO("LoadEntries '%s': %d entries, cache %s; records %d ms, files %d ms, build %d ms", path.c_str(), (int)entries.size(), cache_ok ? "hit" : "miss",
+            (int)(armTicksToNs(records_done - load_start) / 1000000), (int)(armTicksToNs(files_done - records_done) / 1000000), (int)(armTicksToNs(armGetSystemTick() - files_done) / 1000000));
         return entries;
     }
 

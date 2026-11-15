@@ -245,6 +245,10 @@ namespace ul::menu::ui {
             void LoadBgmSfxForCreatedMenus();
             void DisposeAllSfx();
 
+            inline MenuType GetLoadedMenu() {
+                return this->loaded_menu;
+            }
+
             inline MainMenuLayout::Ref &GetMainMenuLayout() {
                 return this->main_menu_lyt;
             }

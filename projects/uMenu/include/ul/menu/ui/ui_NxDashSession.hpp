@@ -2,6 +2,7 @@
 #pragma once
 #include <switch.h>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -14,13 +15,154 @@
 namespace ul::menu::ui::session {
 
     constexpr const char Path[] = "sdmc:/ulaunch/nxdash_session.bin";
-    constexpr u64 Magic = 0x3153534E4458444E; // "NDXDNSS1"
+    constexpr u64 Magic = 0x3253534E4458444E; // "NDXDNSS2"
 
     struct Record {
         u64 magic;
         u64 played_ns;
         u64 resumed_tick; // 0 = not running
+        u64 app_id;       // 0 = homebrew / unknown
     };
+
+    // ---- Per-day play log kept by NX Dash itself (for the streak and the weekly chart on the back of the case) ----
+    // Only time banked when coming back to the menu is counted, so a game that is still running when the console
+    // powers off loses its last stretch. Totals shown to the user come from the console's own statistics when available.
+
+    constexpr const char StatsPath[] = "sdmc:/ulaunch/nxdash_stats.bin";
+    constexpr u32 StatsMagic = 0x3153444E; // "NDS1"
+    constexpr u32 StatsKeepDays = 120;
+    constexpr size_t StatsMaxRows = 4000;
+
+    struct StatRow {
+        u64 app_id;
+        u32 day;      // days since 1970-01-01, local time
+        u32 seconds;
+        u32 launches;
+        u32 pad;
+    };
+
+    inline u32 Today() {
+        const auto now = ::time(nullptr);
+        const auto lt = localtime(&now);
+        if(lt == nullptr) {
+            return (u32)(now / 86400);
+        }
+        // Days from civil date (Howard Hinnant's algorithm)
+        s32 y = lt->tm_year + 1900;
+        const u32 m = lt->tm_mon + 1;
+        const u32 d = lt->tm_mday;
+        y -= (m <= 2);
+        const s32 era = ((y >= 0) ? y : (y - 399)) / 400;
+        const u32 yoe = (u32)(y - era * 400);
+        const u32 doy = (153 * (m + ((m > 2) ? -3 : 9)) + 2) / 5 + d - 1;
+        const u32 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return (u32)(era * 146097 + (s32)doe - 719468);
+    }
+
+    inline std::vector<StatRow> &Stats() {
+        static std::vector<StatRow> rows;
+        static bool loaded = false;
+        if(!loaded) {
+            loaded = true;
+            auto f = fopen(StatsPath, "rb");
+            if(f != nullptr) {
+                u32 header[2] = {};
+                if((fread(header, sizeof(header), 1, f) == 1) && (header[0] == StatsMagic) && (header[1] <= StatsMaxRows)) {
+                    rows.resize(header[1]);
+                    if((header[1] > 0) && (fread(rows.data(), sizeof(StatRow), header[1], f) != header[1])) {
+                        rows.clear();
+                    }
+                }
+                fclose(f);
+            }
+        }
+        return rows;
+    }
+
+    inline void SaveStats() {
+        auto &rows = Stats();
+        const auto today = Today();
+        rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const StatRow &row) {
+            return (row.day + StatsKeepDays) < today;
+        }), rows.end());
+        if(rows.size() > StatsMaxRows) {
+            rows.erase(rows.begin(), rows.begin() + (rows.size() - StatsMaxRows));
+        }
+        auto f = fopen(StatsPath, "wb");
+        if(f != nullptr) {
+            const u32 header[2] = { StatsMagic, (u32)rows.size() };
+            fwrite(header, sizeof(header), 1, f);
+            if(!rows.empty()) {
+                fwrite(rows.data(), sizeof(StatRow), rows.size(), f);
+            }
+            fclose(f);
+        }
+    }
+
+    inline void AddStat(const u64 app_id, const u32 seconds, const u32 launches) {
+        if((app_id == 0) || ((seconds == 0) && (launches == 0))) {
+            return;
+        }
+        auto &rows = Stats();
+        const auto today = Today();
+        for(auto &row : rows) {
+            if((row.app_id == app_id) && (row.day == today)) {
+                row.seconds += seconds;
+                row.launches += launches;
+                SaveStats();
+                return;
+            }
+        }
+        rows.push_back({ app_id, today, seconds, launches, 0 });
+        SaveStats();
+    }
+
+    struct AppStats {
+        u32 week[7] = {};       // seconds per day, oldest first, today last
+        u32 streak = 0;         // consecutive days played, ending today or yesterday
+        u64 total_seconds = 0;
+        u32 launches = 0;
+        s32 days_since_last = -1;
+    };
+
+    inline AppStats GetAppStats(const u64 app_id) {
+        AppStats out;
+        const auto today = Today();
+        std::vector<u32> days;
+        for(const auto &row : Stats()) {
+            if(row.app_id != app_id) {
+                continue;
+            }
+            out.total_seconds += row.seconds;
+            out.launches += row.launches;
+            if(row.day <= today) {
+                const auto ago = today - row.day;
+                if(ago < 7) {
+                    out.week[6 - ago] += row.seconds;
+                }
+                if((out.days_since_last < 0) || ((s32)ago < out.days_since_last)) {
+                    out.days_since_last = (s32)ago;
+                }
+                days.push_back(row.day);
+            }
+        }
+        // Streak: walk back from today (or yesterday, if not played yet today)
+        auto played_on = [&](const u32 day) {
+            return std::find(days.begin(), days.end(), day) != days.end();
+        };
+        auto day = today;
+        if(!played_on(day) && (day > 0)) {
+            day--;
+        }
+        while(played_on(day)) {
+            out.streak++;
+            if(day == 0) {
+                break;
+            }
+            day--;
+        }
+        return out;
+    }
 
     inline bool Load(Record &rec) {
         auto f = fopen(Path, "rb");
@@ -97,8 +239,9 @@ namespace ul::menu::ui::session {
 
     // A game was just launched (app_id 0 = homebrew, not tracked as recent)
     inline void Start(const u64 app_id = 0) {
-        Save({ Magic, 0, armGetSystemTick() });
+        Save({ Magic, 0, armGetSystemTick(), app_id });
         PushRecent(app_id);
+        AddStat(app_id, 0, 1);
     }
 
     // Going back into the suspended game
@@ -116,7 +259,9 @@ namespace ul::menu::ui::session {
         if(Load(rec) && (rec.resumed_tick != 0)) {
             const auto now = armGetSystemTick();
             if(now >= rec.resumed_tick) {
-                rec.played_ns += armTicksToNs(now - rec.resumed_tick);
+                const auto delta_ns = armTicksToNs(now - rec.resumed_tick);
+                rec.played_ns += delta_ns;
+                AddStat(rec.app_id, (u32)(delta_ns / 1'000'000'000ul), 0);
             }
             rec.resumed_tick = 0;
             Save(rec);

@@ -1,4 +1,7 @@
 #include <ul/menu/ui/ui_NxDashSession.hpp>
+#include <ul/menu/bt/bt_Manager.hpp>
+#include <ctime>
+#include <cstring>
 #include <ul/menu/ui/ui_EntryMenu.hpp>
 #include <algorithm>
 #include <functional>
@@ -273,6 +276,19 @@ namespace ul::menu::ui {
         g_EntryHeightCount = entry_height_count;
         this->ComputeSizes(g_EntryHeightCount);
 
+        if(ShelfMode && !this->defer_used && nxdash::On("fast_home") && g_GlobalSettings.IsSuspended() && HasScreenCaptureBackground()) {
+            // Back from a game with HOME: the pause sheet only needs the paused game, so the entry list
+            // (the slowest part of coming back) is read once the sheet is already on screen
+            this->defer_used = true;
+            this->defer_pending = true;
+            this->defer_last_idx = last_idx;
+            this->defer_path = new_path;
+            this->defer_frames = 0;
+            UL_LOG_INFO("EntryMenu::Initialize deferred (fast HOME)");
+            return;
+        }
+        this->defer_used = true;
+
         this->entry_idx_stack.push(last_idx);
         this->MoveTo(new_path, true);
         UL_LOG_INFO("EntryMenu initialized in %d ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - time).count());
@@ -499,6 +515,14 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::OnInput(const u64 keys_down, const u64 keys_up, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
+        if(ShelfMode && this->defer_pending) {
+            this->defer_frames++;
+            // Give the pause sheet time to finish arriving; if it was dismissed already, load right away
+            const auto sheet_settled = !this->sheet_open || (this->sheet_anim >= 0.985);
+            if((this->defer_frames >= 3) && this->sheet_checked && sheet_settled && (this->launch_t < 0.0)) {
+                this->DeferredLoadNow();
+            }
+        }
         if(this->IsCursorInTransition()) {
             return;
         }
@@ -583,6 +607,14 @@ namespace ul::menu::ui {
     void EntryMenu::MoveTo(const std::string &new_path, const bool force_pop_idx) {
         UL_LOG_INFO("EntryMenu::MoveTo start...");
         const auto time = std::chrono::system_clock::now();
+
+        if(this->defer_pending) {
+            // Something asked for a (re)load before the deferred one ran: this call does that job
+            this->defer_pending = false;
+            this->entry_idx_stack.push(this->defer_last_idx);
+        }
+        this->collector.clear();
+        this->collector_next = 0;
 
         const auto reloading = new_path.empty();
         const auto going_back = new_path.length() < this->cur_path.length();
@@ -884,6 +916,7 @@ namespace ul::menu::ui {
         SDL_Texture *g_FadeDown = nullptr;
         SDL_Texture *g_FadeUp = nullptr;
         SDL_Texture *g_GlossDown = nullptr;
+        SDL_Texture *g_Glow = nullptr;
         bool g_ShapesReady = false;
 
         SDL_Texture *MakeAlphaTexture(const s32 w, const s32 h, const std::function<double(s32, s32)> &alpha_fn, const u8 gray) {
@@ -944,6 +977,12 @@ namespace ul::menu::ui {
             g_GlossDown = MakeAlphaTexture(4, 64, [](const s32, const s32 py) {
                 const auto v = 1.0 - (py + 0.5) / 64.0;
                 return v * v;
+            }, 0xFF);
+            g_Glow = MakeAlphaTexture(128, 48, [](const s32 px, const s32 py) {
+                const auto dx = ((px + 0.5) - 64.0) / 64.0;
+                const auto dy = ((py + 0.5) - 24.0) / 24.0;
+                const auto d2 = dx * dx + dy * dy;
+                return (d2 >= 1.0) ? 0.0 : (1.0 - d2) * (1.0 - d2);
             }, 0xFF);
             g_Sheen = MakeAlphaTexture(96, 4, [](const s32 px, const s32) {
                 const auto dx = ((px + 0.5) - 48.0) / 48.0;
@@ -1206,6 +1245,8 @@ namespace ul::menu::ui {
         const auto cat = this->shelf_cats.at(idx);
         this->shelf_intro = 0.0;
         this->shelf_intro_dir = (idx_raw > this->shelf_cat) ? 1.0 : -1.0;
+        this->Haptic(0.30f, 220.0f, 0.016);
+        this->Haptic(0.30f, 220.0f, 0.016, 0.085);
         this->shelf_sheen_pending = true;
         this->cur_entry_change_started_cb();
 
@@ -1259,6 +1300,8 @@ namespace ul::menu::ui {
             if(next == cur) {
                 // Rubber band: nudge past the end, the easing pulls it back
                 this->shelf_s += (dir > 0) ? 0.22 : -0.22;
+                this->Haptic(0.75f, 110.0f, 0.06);
+                this->NxSfx(1);
                 return;
             }
             this->shelf_target = next;
@@ -1269,6 +1312,7 @@ namespace ul::menu::ui {
         }
         this->shelf_sheen_pending = true;
         const auto pos = ((this->shelf_target % nv) + nv) % nv;
+        this->Haptic(0.22f, 260.0f, 0.012);
         this->cur_entry_change_started_cb();
         this->SetFocusedEntryIndex(this->shelf_valid.at(pos));
         this->NotifyFocusedEntryChanged(prev_idx);
@@ -1293,13 +1337,98 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::ShelfInput(const u64 keys_down, const u64 keys_held, const pu::ui::TouchPoint touch_pos) {
+        if((keys_down != 0) || (keys_held != 0) || !touch_pos.IsEmpty()) {
+            this->idle_t = 0.0;
+            if(this->saver_on) {
+                // Any input ends the idle drift and is swallowed
+                this->SaverStop();
+                this->shelf_touching = false;
+                return;
+            }
+        }
         if(this->launch_t >= 0.0) {
             // Launch transition running
+            return;
+        }
+        if(this->lock_open) {
+            this->LockInput(keys_down, touch_pos);
             return;
         }
         if(this->sheet_open) {
             this->SheetInput(keys_down, touch_pos);
             return;
+        }
+        if(this->flip_open) {
+            this->FlipInput(keys_down, touch_pos);
+            return;
+        }
+        if(this->duel_open) {
+            this->DuelInput(keys_down, touch_pos);
+            return;
+        }
+        if(this->defer_pending) {
+            // Nothing to navigate until the entries are in
+            return;
+        }
+
+        if(nxdash::On("eggs")) {
+            // Secret tip: hold L + R + ZL + ZR
+            const u64 combo = HidNpadButton_L | HidNpadButton_R | HidNpadButton_ZL | HidNpadButton_ZR;
+            if((keys_held & combo) == combo) {
+                if(!this->tip_combo_down) {
+                    this->tip_combo_down = true;
+                    static const char *const Tips[] = {
+                        "Mantené izquierda o derecha para recorrer el estante de corrido.",
+                        "L y R saltan de a cinco juegos.",
+                        "El botón menos da vuelta la caja y muestra cuánto jugaste.",
+                        "Y arma un duelo entre dos juegos al azar.",
+                        "La caja dorada es el juego que quedó en pausa.",
+                        "Arriba y abajo cambian de estante.",
+                        "X sobre un juego: mover a una categoría o crear una nueva.",
+                        "Girá la palanca derecha en círculos y mirá el estante.",
+                        "Un juego con 100 aperturas gana borde de coleccionista.",
+                        "Después de un minuto quieto, el estante se pasea solo.",
+                        "En la pantalla de bloqueo, arriba y abajo cambian el brillo.",
+                        "HOME dentro de un juego muestra cuánto llevás jugando.",
+                    };
+                    const auto count = sizeof(Tips) / sizeof(Tips[0]);
+                    this->shelf_press = 1.0;
+                    this->Haptic(0.35f, 200.0f, 0.03);
+                    g_MenuApplication->ShowNotification(Tips[armGetSystemTick() % count], 3200);
+                }
+                return;
+            }
+            this->tip_combo_down = false;
+
+            // Right stick spun in circles: the cases go down like dominoes
+            u32 rs_dir = 0;
+            if(keys_held & HidNpadButton_StickRUp) { rs_dir = 1; }
+            else if(keys_held & HidNpadButton_StickRRight) { rs_dir = 2; }
+            else if(keys_held & HidNpadButton_StickRDown) { rs_dir = 3; }
+            else if(keys_held & HidNpadButton_StickRLeft) { rs_dir = 4; }
+            if((rs_dir != 0) && (rs_dir != this->rs_last_dir)) {
+                if(this->rs_last_dir != 0) {
+                    const auto step = ((s32)rs_dir - (s32)this->rs_last_dir + 4) % 4;
+                    const auto sign = (step == 1) ? 1 : ((step == 3) ? -1 : 0);
+                    if((sign != 0) && (sign == this->rs_sign) && ((this->fx_time - this->rs_last_t) < 0.5)) {
+                        this->rs_steps++;
+                    }
+                    else {
+                        this->rs_steps = (sign != 0) ? 1 : 0;
+                    }
+                    this->rs_sign = sign;
+                }
+                this->rs_last_dir = rs_dir;
+                this->rs_last_t = this->fx_time;
+                if((this->rs_steps >= 7) && (this->domino_t < 0.0)) {
+                    this->rs_steps = 0;
+                    this->domino_t = 0.0;
+                    for(u32 i = 0; i < 10; i++) {
+                        this->Haptic(0.30f + 0.04f * i, 140.0f, 0.02, 0.05 * i);
+                    }
+                    this->NxSfx(1);
+                }
+            }
         }
 
         // ---- Touch: drag to scroll, tap a case to focus it, tap the focused case to open it, tap a tab to switch shelf ----
@@ -1357,13 +1486,13 @@ namespace ul::menu::ui {
         }
 
         const auto nv = (s32)this->shelf_valid.size();
-        const auto left_down = keys_down & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
-        const auto right_down = keys_down & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
+        const auto left_down = keys_down & (HidNpadButton_Left | HidNpadButton_StickLLeft);
+        const auto right_down = keys_down & (HidNpadButton_Right | HidNpadButton_StickLRight);
         this->shelf_held = this->shelf_hold_frames > 27;
-        const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft | HidNpadButton_StickRLeft);
-        const auto right_held = keys_held & (HidNpadButton_Right | HidNpadButton_StickLRight | HidNpadButton_StickRRight);
-        const auto up_down = keys_down & (HidNpadButton_Up | HidNpadButton_StickLUp | HidNpadButton_StickRUp);
-        const auto down_down = keys_down & (HidNpadButton_Down | HidNpadButton_StickLDown | HidNpadButton_StickRDown);
+        const auto left_held = keys_held & (HidNpadButton_Left | HidNpadButton_StickLLeft);
+        const auto right_held = keys_held & (HidNpadButton_Right | HidNpadButton_StickLRight);
+        const auto up_down = keys_down & (HidNpadButton_Up | HidNpadButton_StickLUp);
+        const auto down_down = keys_down & (HidNpadButton_Down | HidNpadButton_StickLDown);
 
         if(up_down || down_down) {
             this->ShelfSwitchCategory(up_down ? -1 : 1);
@@ -1387,9 +1516,16 @@ namespace ul::menu::ui {
         else if(keys_down & HidNpadButton_R) {
             this->ShelfMove(5);
         }
+        else if((keys_down & HidNpadButton_Y) && nxdash::On("roulette")) {
+            this->shelf_hold_frames = 0;
+            this->DuelOpen();
+        }
         else {
             this->shelf_hold_frames = 0;
-            auto fwd = keys_down & ~(u64)(HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_AnyUp | HidNpadButton_AnyDown);
+            auto fwd = keys_down & ~(u64)(HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_AnyUp | HidNpadButton_AnyDown | HidNpadButton_AnyLeft | HidNpadButton_AnyRight | HidNpadButton_Minus | HidNpadButton_Plus);
+            if(nxdash::On("roulette")) {
+                fwd &= ~(u64)HidNpadButton_Y;
+            }
             if(nv == 0) {
                 // Empty shelf: the focused entry is not visible, so don't act on it
                 fwd &= ~(u64)(HidNpadButton_A | HidNpadButton_X | HidNpadButton_Y);
@@ -1404,11 +1540,68 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::ShelfRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
+        if(this->defer_pending) {
+            // Entries not read yet: placeholder cases keep the shelf from looking empty
+            this->RenderSkeleton(drawer, x, y);
+            this->shelf_hits.clear();
+            return;
+        }
+        if((this->lock_open && (this->lock_anim >= 1.0) && (this->lock_out < 0.0)) || (this->launch_t > 0.45)) {
+            // Fully covered by the lock screen or the launch transition: nothing here would be seen
+            return;
+        }
+
         this->ShelfRebuildValid();
         const auto nv = (s32)this->shelf_valid.size();
 
         // Category change slide
         this->shelf_intro += this->fx_dt;
+
+        // Idle: after a while the shelf starts drifting on its own
+        if(!this->IsModalOpen() && nxdash::On("screensaver")) {
+            this->idle_t += this->fx_dt;
+            const auto wait = (double)std::max(10, nxdash::Value("saver_seconds", 60));
+            if(!this->saver_on && (this->idle_t > wait) && (nv > 1)) {
+                this->saver_on = true;
+                this->saver_step_t = 0.0;
+                this->saver_dir = 1;
+                this->saver_saved_pos = ((this->shelf_target % nv) + nv) % nv;
+            }
+        }
+        else {
+            this->idle_t = 0.0;
+        }
+        if(this->saver_on) {
+            this->saver_step_t += this->fx_dt;
+            if(this->saver_step_t >= 2.6) {
+                this->saver_step_t = 0.0;
+                this->ShelfStepSilent(this->saver_dir);
+            }
+        }
+        this->saver_fade = this->FxApproach(this->saver_fade, this->saver_on ? 1.0 : 0.0, 0.05);
+        if(this->domino_t >= 0.0) {
+            this->domino_t += this->fx_dt;
+            if(this->domino_t > 3.2) {
+                this->domino_t = -1.0;
+            }
+        }
+
+        // Which games have earned the collector's rim: one statistics query per frame, never a burst
+        if(nxdash::On("eggs") && !this->cur_entries.empty()) {
+            if(this->collector.size() != this->cur_entries.size()) {
+                this->collector.assign(this->cur_entries.size(), -1);
+                this->collector_next = 0;
+            }
+            if(this->collector_next < this->cur_entries.size()) {
+                const auto &entry = this->cur_entries.at(this->collector_next);
+                s8 earned = 0;
+                if(entry.Is<EntryType::Application>()) {
+                    earned = (this->QueryLaunches(entry) >= (u32)std::max(1, nxdash::Value("collector_launches", 100))) ? 1 : 0;
+                }
+                this->collector.at(this->collector_next) = earned;
+                this->collector_next++;
+            }
+        }
 
         this->ShelfRenderInfo(drawer, x, y);
         if(nv == 0) {
@@ -1423,7 +1616,7 @@ namespace ul::menu::ui {
         }
 
         // Ease towards the target (continuous position, so wrapping around stays smooth)
-        this->shelf_s = this->FxApproach(this->shelf_s, (double)this->shelf_target, this->shelf_held ? 0.42 : 0.20);
+        this->shelf_s = this->FxApproach(this->shelf_s, (double)this->shelf_target, this->saver_on ? 0.022 : (this->shelf_held ? 0.42 : 0.20));
         this->shelf_press *= std::pow(0.80, this->fx_k);
         if(this->shelf_press < 0.01) {
             this->shelf_press = 0.0;
@@ -1503,6 +1696,11 @@ namespace ul::menu::ui {
             this->shelf_sheen = std::min(1.0, this->shelf_sheen + this->fx_dt / 0.75);
         }
 
+        // A pool of light on the floor the cases stand on
+        if(g_Glow != nullptr) {
+            drawer->RenderTexture(g_Glow, (s32)(cx - area_w * 0.46), (s32)(cy + H / 2.0 - H * 0.10), pu::ui::render::TextureRenderOptions((u8)(26.0 * intro_of(0.0)), (s32)(area_w * 0.92), (s32)(H * 0.24), {}, {}, {}));
+        }
+
         // Soft floor shadow under the focused case: grows as the case lifts
         if(g_SoftShadow != nullptr) {
             const auto sh_w = d * (1.55 + 0.25 * settled);
@@ -1526,12 +1724,18 @@ namespace ul::menu::ui {
             // Focused: lifts 4.5% and floats a little; pressed: dips to 0.97
             const auto press_k = (1.0 - 0.03 * this->shelf_press * o) * (1.0 + 0.045 * o);
             const auto case_w = (ws + (d - ws) * o) * sc * press_k;
-            const auto case_h = H * sc * press_k;
+            // Domino easter egg: a wave of cases dropping left to right, then standing back up
+            double dom = 0.0;
+            if(this->domino_t >= 0.0) {
+                const auto lt = this->domino_t - (r + 10.0) * 0.05;
+                dom = SmoothStep(lt / 0.20) * (1.0 - SmoothStep((lt - 1.25) / 0.40));
+            }
+            const auto case_h = H * sc * press_k * (1.0 - 0.24 * dom);
             const auto sink = H * 0.5 * (1.0 - sc) * 0.42;
             const auto fade = intro_of(r);
             const auto bob = std::sin(this->fx_time * (2.0 * M_PI / 4.5)) * 3.0 * o * settled;
             const auto ex = cx + xsc(u) - case_w / 2.0;
-            const auto ey = cy - case_h / 2.0 + sink - o * H * 0.02 + bob + (1.0 - fade) * 46.0 * this->shelf_intro_dir;
+            const auto ey = cy - case_h / 2.0 + sink - o * H * 0.02 + bob + (1.0 - fade) * 46.0 * this->shelf_intro_dir + dom * H * 0.30 * sc;
             if((fade <= 0.004) || (ex + case_w < (double)x - 24.0) || (ex > (double)x + area_w + 24.0)) {
                 continue;
             }
@@ -1558,6 +1762,29 @@ namespace ul::menu::ui {
                 FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.10) }, (s32)ex - 14, (s32)ey - 14, (s32)case_w + 28, (s32)case_h + 28, radius + 13);
                 FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.16) }, (s32)ex - 8, (s32)ey - 8, (s32)case_w + 16, (s32)case_h + 16, radius + 7);
                 FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(ring * 0.92) }, (s32)ex - 2, (s32)ey - 2, (s32)case_w + 4, (s32)case_h + 4, radius + 2);
+            }
+
+            // Collector's rim: a slow rainbow around games opened a hundred times
+            if((entry_idx < this->collector.size()) && (this->collector.at(entry_idx) > 0)) {
+                const auto hue_at = [&](const double shift) {
+                    const auto h6 = std::fmod(this->fx_time * 0.22 + (double)it.pos * 0.09 + shift, 1.0) * 6.0;
+                    const auto f = h6 - std::floor(h6);
+                    const u8 up = (u8)(255.0 * f);
+                    const u8 dn = (u8)(255.0 * (1.0 - f));
+                    switch((s32)h6) {
+                        case 0: return pu::ui::Color{ 0xFF, up, 0x60, 0xFF };
+                        case 1: return pu::ui::Color{ dn, 0xFF, 0x60, 0xFF };
+                        case 2: return pu::ui::Color{ 0x60, 0xFF, up, 0xFF };
+                        case 3: return pu::ui::Color{ 0x60, dn, 0xFF, 0xFF };
+                        case 4: return pu::ui::Color{ up, 0x60, 0xFF, 0xFF };
+                        default: return pu::ui::Color{ 0xFF, 0x60, dn, 0xFF };
+                    }
+                };
+                const auto outer = hue_at(0.0);
+                const auto inner = hue_at(0.33);
+                const auto rim = std::max(2.0, 5.0 * sc);
+                FillRR(drawer, { outer.r, outer.g, outer.b, (u8)(235.0 * fade) }, (s32)(ex - rim), (s32)(ey - rim), (s32)(case_w + 2.0 * rim), (s32)(case_h + 2.0 * rim), radius + (s32)rim);
+                FillRR(drawer, { inner.r, inner.g, inner.b, (u8)(235.0 * fade) }, (s32)(ex - rim / 2.0), (s32)(ey - rim / 2.0), (s32)(case_w + rim), (s32)(case_h + rim), radius + (s32)(rim / 2.0));
             }
 
             // Case body: red by default, violet for the last games played, shiny gold for the one running now
@@ -1877,6 +2104,20 @@ namespace ul::menu::ui {
         const auto ty = y + (s32)(area_h * 0.815);
         const auto travel = std::clamp((double)this->shelf_target - this->shelf_s, -1.0, 1.0) * 34.0;
         const auto intro = std::clamp((this->shelf_intro - 0.08) / 0.30, 0.0, 1.0);
+        {
+            // "12 / 68" at the right end of the tab row
+            const auto pos_now = ((this->shelf_target % nv) + nv) % nv;
+            const auto key = pos_now * 10000 + nv;
+            if(key != this->shelf_count_key) {
+                this->shelf_count_key = key;
+                pu::ui::render::DeleteTexture(this->shelf_count_tex);
+                this->shelf_count_tex = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), std::to_string(pos_now + 1) + " / " + std::to_string(nv), { 0xFF, 0xFF, 0xFF, 0xFF });
+            }
+            if(this->shelf_count_tex != nullptr) {
+                const auto cw = pu::ui::render::GetTextureWidth(this->shelf_count_tex);
+                drawer->RenderTexture(this->shelf_count_tex, x + (s32)area_w - 118 - cw, y + 18 + 12, pu::ui::render::TextureRenderOptions((u8)(140.0 * intro), {}, {}, {}, {}, {}));
+            }
+        }
         RenderTextFit(drawer, this->shelf_info_title, cx + travel, ty, area_w - 260.0, (u8)(255.0 * settle * intro), true);
         const auto settle_late = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 6.0, 0.0, 1.0);
         RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 70 + (s32)((1.0 - settle_late) * 8.0), area_w - 260.0, (u8)(150.0 * settle_late * intro), true);
@@ -1906,51 +2147,8 @@ namespace ul::menu::ui {
 
         std::string title;
         std::string meta;
-        bool found = false;
-
-        // Is the paused game on the current shelf? Then focus it, too.
-        for(u32 i = 0; i < this->cur_entries.size(); i++) {
-            auto &entry = this->cur_entries.at(i);
-            if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
-                ShelfDescribe(entry, title, meta);
-                found = true;
-                if(this->IsInRoot() && entry.Is<EntryType::Homebrew>()) {
-                    this->shelf_root_filter = ShelfFilter::Homebrew;
-                    this->shelf_cats_sig.clear();
-                }
-                if(i != this->cur_entry_idx) {
-                    const auto prev_idx = (s32)this->cur_entry_idx;
-                    this->SetFocusedEntryIndex(i);
-                    this->NotifyFocusedEntryChanged(prev_idx);
-                }
-                this->shelf_synced = false;
-                break;
-            }
-        }
-
-        // Otherwise look for it in the root and in every category
-        if(!found) {
-            const auto &root = GetActiveMenuPath();
-            auto search = [&](std::vector<Entry> entries) {
-                for(auto &entry : entries) {
-                    if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
-                        ShelfDescribe(entry, title, meta);
-                        return true;
-                    }
-                }
-                return false;
-            };
-            auto root_entries = LoadEntries(root);
-            found = search(root_entries);
-            for(const auto &entry : root_entries) {
-                if(found) {
-                    break;
-                }
-                if(entry.Is<EntryType::Folder>()) {
-                    found = search(LoadEntries(entry.GetFolderPath()));
-                }
-            }
-        }
+        this->DescribeSuspended(title, meta);
+        this->FocusSuspendedEntry();
 
         if(title.empty()) {
             title = "Juego en pausa";
@@ -2062,6 +2260,9 @@ namespace ul::menu::ui {
         if(!ShelfMode) {
             return;
         }
+
+        nxdash::g_Modal = this->IsModalOpen();
+        this->HapticUpdate();
 
         // Coming back from a game with HOME: show the game sheet first
         if(!this->sheet_checked) {
@@ -2266,6 +2467,11 @@ namespace ul::menu::ui {
         const s32 sw = pu::ui::render::ScreenWidth;
         const s32 sh = pu::ui::render::ScreenHeight;
 
+        // Rumble builds with the dive and cuts as the screen goes black
+        if(t < 0.88) {
+            this->Haptic(0.12f + 0.62f * (float)t, 150.0f, 0.03);
+        }
+
         // The library falls away
         drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(255.0 * SmoothStep(t / 0.30)) }, 0, 0, sw, sh);
 
@@ -2292,6 +2498,1353 @@ namespace ul::menu::ui {
 
         // ...and out to black, which is where the game picks up
         drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, (u8)(255.0 * SmoothStep((t - 0.58) / 0.34)) }, 0, 0, sw, sh);
+    }
+
+    // =====================================================================================================
+    // NX Dash: fast HOME, rumble, idle drift, lock screen, back of the case, duel, easter eggs
+    // =====================================================================================================
+
+    namespace {
+
+        inline pu::sdl2::Texture Text(const pu::ui::DefaultFontSize size, const std::string &text) {
+            return pu::ui::render::RenderText(pu::ui::GetDefaultFont(size), text, { 0xFF, 0xFF, 0xFF, 0xFF });
+        }
+
+        inline void Free(pu::sdl2::Texture &tex) {
+            pu::ui::render::DeleteTexture(tex);
+            tex = nullptr;
+        }
+
+        inline void Draw(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture tex, const s32 x, const s32 y, const double alpha) {
+            if(tex != nullptr) {
+                drawer->RenderTexture(tex, x, y, pu::ui::render::TextureRenderOptions((u8)std::clamp(alpha, 0.0, 255.0), {}, {}, {}, {}, {}));
+            }
+        }
+
+        inline s32 TexW(pu::sdl2::Texture tex) {
+            return (tex != nullptr) ? pu::ui::render::GetTextureWidth(tex) : 0;
+        }
+
+        inline s32 TexH(pu::sdl2::Texture tex) {
+            return (tex != nullptr) ? pu::ui::render::GetTextureHeight(tex) : 0;
+        }
+
+        inline bool Hit(const s32 px, const s32 py, const s32 x, const s32 y, const s32 w, const s32 h) {
+            return (px >= x) && (px < x + w) && (py >= y) && (py < y + h);
+        }
+
+        std::string FormatPlayed(const u64 seconds) {
+            const auto mins = seconds / 60;
+            if(mins < 1) {
+                return "menos de 1 min";
+            }
+            if(mins < 60) {
+                return std::to_string(mins) + " min";
+            }
+            return std::to_string(mins / 60) + " h " + std::to_string(mins % 60) + " min";
+        }
+
+    }
+
+    // ---- Fast HOME ----
+
+    void EntryMenu::DescribeSuspended(std::string &out_title, std::string &out_meta) {
+        for(auto &entry : this->cur_entries) {
+            if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
+                ShelfDescribe(entry, out_title, out_meta);
+                return;
+            }
+        }
+
+        if(this->defer_pending) {
+            // The entry list is not in yet: ask for the paused game's own title data
+            Entry probe = {};
+            probe.type = EntryType::Application;
+            probe.app_info.app_id = g_GlobalSettings.system_status.suspended_app_id;
+            probe.app_info.record.id = probe.app_info.app_id;
+            ShelfDescribe(probe, out_title, out_meta);
+            if(out_title == "Sin título") {
+                out_title.clear();
+            }
+            return;
+        }
+
+        // Not on this shelf: look in the root and in every category
+        const auto &root = GetActiveMenuPath();
+        auto search = [&](std::vector<Entry> entries) {
+            for(auto &entry : entries) {
+                if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
+                    ShelfDescribe(entry, out_title, out_meta);
+                    return true;
+                }
+            }
+            return false;
+        };
+        auto root_entries = LoadEntries(root);
+        if(search(root_entries)) {
+            return;
+        }
+        for(const auto &entry : root_entries) {
+            if(entry.Is<EntryType::Folder>() && search(LoadEntries(entry.GetFolderPath()))) {
+                return;
+            }
+        }
+    }
+
+    void EntryMenu::FocusSuspendedEntry() {
+        for(u32 i = 0; i < this->cur_entries.size(); i++) {
+            const auto &entry = this->cur_entries.at(i);
+            if((entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) && g_GlobalSettings.IsEntrySuspended(entry)) {
+                if(this->IsInRoot() && !this->ShelfEntryMatches(entry)) {
+                    // Not on the shelf being shown: switch to the one that has it
+                    this->shelf_root_filter = entry.Is<EntryType::Homebrew>() ? ShelfFilter::Homebrew : ShelfFilter::Games;
+                    this->shelf_cats_sig.clear();
+                }
+                if(i != this->cur_entry_idx) {
+                    const auto prev_idx = (s32)this->cur_entry_idx;
+                    this->SetFocusedEntryIndex(i);
+                    this->NotifyFocusedEntryChanged(prev_idx);
+                }
+                this->shelf_synced = false;
+                return;
+            }
+        }
+    }
+
+    void EntryMenu::DeferredLoadNow() {
+        if(!this->defer_pending) {
+            return;
+        }
+        this->defer_pending = false;
+        const auto start = armGetSystemTick();
+        this->entry_idx_stack.push(this->defer_last_idx);
+        this->MoveTo(this->defer_path, true);
+        this->FocusSuspendedEntry();
+        this->ShelfClearInfo();
+        this->shelf_intro = 0.0;
+        this->shelf_intro_dir = 1.0;
+        UL_LOG_INFO("EntryMenu deferred load took %d ms", (int)(armTicksToNs(armGetSystemTick() - start) / 1000000));
+    }
+
+    void EntryMenu::RenderSkeleton(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
+        EnsureShapes();
+        const double area_w = (double)this->GetWidth();
+        const double area_h = (double)this->GetHeight();
+        const double H = area_h * 0.62;
+        const double d = H * (474.0 / 760.0);
+        const double ws = H * 0.085;
+        const double gap = H * 0.014;
+        const double cx = (double)x + area_w / 2.0;
+        const double cy = (double)y + area_h * 0.45;
+        // A soft pulse travelling outwards from the middle
+        const auto pulse = [&](const double dist) {
+            return 0.5 + 0.5 * std::sin(this->fx_time * 4.2 - dist * 0.55);
+        };
+        FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(26.0 + 22.0 * pulse(0.0)) }, (s32)(cx - d / 2.0), (s32)(cy - H / 2.0), (s32)d, (s32)H, 8);
+        for(s32 side = -1; side <= 1; side += 2) {
+            auto px = cx + side * (d / 2.0 + 1.4 * gap);
+            for(s32 i = 1; i <= 16; i++) {
+                const auto sc = 1.0 / (1.0 + std::pow((double)i * (ws + gap) / (H * 1.3), 1.6));
+                const auto w = ws * sc;
+                const auto h = H * sc;
+                const auto left = (side > 0) ? px : (px - w);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)((18.0 + 20.0 * pulse((double)i)) * sc) }, (s32)left, (s32)(cy - h / 2.0 + H * 0.5 * (1.0 - sc) * 0.42), (s32)w, (s32)h, 3);
+                px += side * (w + gap * sc);
+            }
+        }
+        // Title and details placeholders
+        const auto ty = y + (s32)(area_h * 0.815);
+        FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(22.0 + 16.0 * pulse(1.0)) }, (s32)(cx - 260.0), ty + 8, 520, 34, 17);
+        FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(14.0 + 12.0 * pulse(2.0)) }, (s32)(cx - 170.0), ty + 72, 340, 22, 11);
+    }
+
+    // ---- Rumble and extra sounds ----
+
+    void EntryMenu::Haptic(const float amp, const float freq, const double dur, const double delay) {
+        if(!nxdash::On("haptics")) {
+            return;
+        }
+        if(this->hap_queue.size() < 32) {
+            this->hap_queue.push_back({ this->fx_time + delay, dur, amp, freq });
+        }
+    }
+
+    void EntryMenu::HapticUpdate() {
+        if(this->hap_queue.empty() && (this->hap_off_at < 0.0)) {
+            return;
+        }
+        if(!this->hap_init) {
+            this->hap_init = true;
+            const auto rc1 = hidInitializeVibrationDevices(this->hap_handles, 2, HidNpadIdType_Handheld, HidNpadStyleTag_NpadHandheld);
+            const auto rc2 = hidInitializeVibrationDevices(this->hap_handles + 2, 2, HidNpadIdType_No1, HidNpadStyleTag_NpadJoyDual);
+            this->hap_ok = R_SUCCEEDED(rc1) && R_SUCCEEDED(rc2);
+        }
+        if(!this->hap_ok) {
+            this->hap_queue.clear();
+            this->hap_off_at = -1.0;
+            return;
+        }
+
+        const auto send = [&](const float amp, const float freq) {
+            HidVibrationValue values[4];
+            for(auto &value : values) {
+                value.amp_low = amp;
+                value.freq_low = freq;
+                value.amp_high = amp * 0.6f;
+                value.freq_high = freq * 2.0f;
+            }
+            hidSendVibrationValues(this->hap_handles, values, 4);
+        };
+
+        for(auto it = this->hap_queue.begin(); it != this->hap_queue.end(); ) {
+            if(it->at <= this->fx_time) {
+                send(std::clamp(it->amp, 0.0f, 1.0f), it->freq);
+                this->hap_off_at = std::max(this->hap_off_at, this->fx_time + it->dur);
+                it = this->hap_queue.erase(it);
+            }
+            else {
+                it++;
+            }
+        }
+        if((this->hap_off_at >= 0.0) && (this->fx_time >= this->hap_off_at)) {
+            send(0.0f, 160.0f);
+            this->hap_off_at = -1.0;
+        }
+    }
+
+    void EntryMenu::NxSfx(const u32 which) {
+        if(!nxdash::On("sounds") || (which >= 3)) {
+            return;
+        }
+        if(!this->nx_sfx_loaded) {
+            this->nx_sfx_loaded = true;
+            static const char *const Names[3] = { "sound/NxDash/Case.wav", "sound/NxDash/End.wav", "sound/NxDash/Pick.wav" };
+            for(u32 i = 0; i < 3; i++) {
+                const auto path = TryGetActiveThemeResource(Names[i]);
+                this->nx_sfx[i] = path.empty() ? nullptr : pu::audio::LoadSfx(path);
+            }
+        }
+        if(this->nx_sfx[which] != nullptr) {
+            pu::audio::PlaySfx(this->nx_sfx[which]);
+        }
+    }
+
+    // ---- Idle drift ----
+
+    void EntryMenu::ShelfStepSilent(const s32 dir) {
+        const auto nv = (s32)this->shelf_valid.size();
+        if(nv < 2) {
+            return;
+        }
+        const auto prev_idx = (s32)this->cur_entry_idx;
+        if(nv < ShelfLoopMin) {
+            const auto cur = ((this->shelf_target % nv) + nv) % nv;
+            auto next = cur + dir;
+            if((next < 0) || (next >= nv)) {
+                // Short shelf: turn around at the ends
+                this->saver_dir = -this->saver_dir;
+                next = cur + this->saver_dir;
+            }
+            this->shelf_target = std::clamp(next, 0, nv - 1);
+        }
+        else {
+            this->shelf_target += dir;
+        }
+        const auto pos = ((this->shelf_target % nv) + nv) % nv;
+        this->SetFocusedEntryIndex(this->shelf_valid.at(pos));
+        this->NotifyFocusedEntryChanged(prev_idx);
+    }
+
+    void EntryMenu::SaverStop() {
+        if(!this->saver_on) {
+            return;
+        }
+        this->saver_on = false;
+        this->idle_t = 0.0;
+        // Back to where the user left it
+        const auto nv = (s32)this->shelf_valid.size();
+        if((nv > 0) && (this->saver_saved_pos < nv)) {
+            const auto prev_idx = (s32)this->cur_entry_idx;
+            const auto cur = ((this->shelf_target % nv) + nv) % nv;
+            auto delta = this->saver_saved_pos - cur;
+            if(nv >= ShelfLoopMin) {
+                delta = ((delta % nv) + nv) % nv;
+                if(delta > nv / 2) {
+                    delta -= nv;
+                }
+            }
+            this->shelf_target += delta;
+            this->SetFocusedEntryIndex(this->shelf_valid.at(this->saver_saved_pos));
+            this->NotifyFocusedEntryChanged(prev_idx);
+        }
+    }
+
+    // ---- Shared bits ----
+
+    u32 EntryMenu::QueryLaunches(const Entry &entry, u64 *out_seconds, s64 *out_last_posix) {
+        if(out_seconds != nullptr) {
+            *out_seconds = 0;
+        }
+        if(out_last_posix != nullptr) {
+            *out_last_posix = -1;
+        }
+        if(!entry.Is<EntryType::Application>()) {
+            return 0;
+        }
+        const auto own = session::GetAppStats(entry.app_info.app_id);
+        u32 launches = own.launches;
+        if(out_seconds != nullptr) {
+            *out_seconds = own.total_seconds;
+        }
+
+        // The console keeps its own history, which reaches back before NX Dash existed
+        if(!this->pdm_init) {
+            this->pdm_init = true;
+            this->pdm_ok = R_SUCCEEDED(pdmqryInitialize());
+        }
+        if(this->pdm_ok) {
+            PdmPlayStatistics stats = {};
+            if(R_SUCCEEDED(pdmqryQueryPlayStatisticsByApplicationIdAndUserAccountId(entry.app_info.app_id, g_GlobalSettings.system_status.selected_user, false, &stats))) {
+                launches = std::max(launches, stats.total_launches);
+                if(out_seconds != nullptr) {
+                    *out_seconds = std::max<u64>(*out_seconds, stats.playtime / 1'000'000'000ul);
+                }
+                if((out_last_posix != nullptr) && (stats.total_launches > 0)) {
+                    *out_last_posix = (s64)stats.last_timestamp_user;
+                }
+            }
+        }
+        return launches;
+    }
+
+    pu::sdl2::TextureHandle::Ref EntryMenu::IconForPos(const s32 pos, const bool load) {
+        if((pos < 0) || (pos >= (s32)this->shelf_valid.size())) {
+            return nullptr;
+        }
+        const auto idx = this->shelf_valid.at(pos);
+        if((idx >= this->entry_icons.size()) || (idx >= this->cur_entries.size())) {
+            return nullptr;
+        }
+        auto &icon = this->entry_icons.at(idx);
+        if((icon == nullptr) && load && this->cur_entries.at(idx).Is<EntryType::Application>()) {
+            icon = LoadApplicationIconTexture(this->cur_entries.at(idx).app_info.app_id);
+        }
+        return icon;
+    }
+
+    void EntryMenu::OnWake() {
+        // Audio was torn down and rebuilt around sleep: the old sound handles are gone
+        for(auto &sfx : this->nx_sfx) {
+            sfx = nullptr;
+        }
+        this->nx_sfx_loaded = false;
+        this->idle_t = 0.0;
+        this->SaverStop();
+        this->OpenLock();
+    }
+
+    void EntryMenu::RenderLayers(pu::ui::render::Renderer::Ref &drawer) {
+        if(!ShelfMode) {
+            return;
+        }
+        // Idle drift: quieten the chrome so only the shelf reads
+        if(this->saver_fade > 0.01) {
+            EnsureShapes();
+            const s32 sw = pu::ui::render::ScreenWidth;
+            const s32 sh = pu::ui::render::ScreenHeight;
+            if(g_FadeDown != nullptr) {
+                drawer->RenderTexture(g_FadeDown, 0, 0, pu::ui::render::TextureRenderOptions((u8)(250.0 * this->saver_fade), sw, 330, {}, {}, {}));
+            }
+            if(g_FadeUp != nullptr) {
+                drawer->RenderTexture(g_FadeUp, 0, sh - 330, pu::ui::render::TextureRenderOptions((u8)(250.0 * this->saver_fade), sw, 330, {}, {}, {}));
+            }
+        }
+        this->RenderFlip(drawer);
+        this->RenderDuel(drawer);
+        this->RenderLock(drawer);
+    }
+
+    // ---- Lock screen ----
+
+    namespace {
+
+        constexpr u32 LockClockFontSize = 150;
+
+        std::string LockDateString() {
+            static const char *const Days[7] = { "domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado" };
+            static const char *const Months[12] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
+            const auto now = ::time(nullptr);
+            const auto lt = localtime(&now);
+            if(lt == nullptr) {
+                return "";
+            }
+            return std::string(Days[lt->tm_wday % 7]) + " " + std::to_string(lt->tm_mday) + " de " + Months[lt->tm_mon % 12];
+        }
+
+        std::string LockTimeString() {
+            const auto now = ::time(nullptr);
+            const auto lt = localtime(&now);
+            if(lt == nullptr) {
+                return "--:--";
+            }
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%02d:%02d", lt->tm_hour, lt->tm_min);
+            return buf;
+        }
+
+    }
+
+    void EntryMenu::LockFree() {
+        Free(this->lock_time_tex);
+        Free(this->lock_date_tex);
+        Free(this->lock_title_tex);
+        Free(this->lock_played_tex);
+        Free(this->lock_badge_tex);
+        Free(this->lock_hint_tex);
+        Free(this->lock_bt_tex);
+        Free(this->lock_bt_sub_tex);
+        for(auto &tex : this->lock_ctl_texs) {
+            Free(tex);
+        }
+        for(auto &tex : this->lock_opt_texs) {
+            Free(tex);
+        }
+        for(auto &tex : this->lock_key_texs) {
+            Free(tex);
+        }
+        this->lock_opt_texs.clear();
+        this->lock_key_texs.clear();
+        this->lock_opt_keys.clear();
+        this->lock_time_str.clear();
+        this->lock_bt_str.clear();
+    }
+
+    void EntryMenu::OpenLock() {
+        if(!ShelfMode || !nxdash::On("lock") || this->lock_open || (this->launch_t >= 0.0)) {
+            return;
+        }
+        this->LockFree();
+        this->sheet_open = false;
+        this->sheet_anim = 0.0;
+        this->flip_open = false;
+        this->duel_open = false;
+
+        if(!this->lock_font_ready) {
+            // The big clock font is only built the first time the lock screen shows
+            this->lock_font_ready = true;
+            auto font = std::make_shared<pu::ttf::Font>(LockClockFontSize);
+            if(pu::ui::render::LoadSingleSharedFontInFont(font, PlSharedFontType_Standard)) {
+                pu::ui::render::AddDefaultFont(font);
+            }
+        }
+        if(!this->lock_svc_init) {
+            this->lock_svc_init = true;
+            this->lock_lbl_ok = R_SUCCEEDED(lblInitialize());
+            this->lock_aud_ok = R_SUCCEEDED(audctlInitialize());
+        }
+        if(this->lock_lbl_ok && R_FAILED(lblGetCurrentBrightnessSetting(&this->lock_bright))) {
+            this->lock_lbl_ok = false;
+        }
+        if(this->lock_aud_ok) {
+            AudioTarget target = AudioTarget_Speaker;
+            s32 vol = 0;
+            s32 vol_max = 15;
+            if(R_SUCCEEDED(audctlGetDefaultTarget(&target)) && R_SUCCEEDED(audctlGetTargetVolume(&vol, target))) {
+                if(R_FAILED(audctlGetTargetVolumeMax(&vol_max)) || (vol_max <= 0)) {
+                    vol_max = 15;
+                }
+                this->lock_audio_target = (u32)target;
+                this->lock_vol = vol;
+                this->lock_vol_max = vol_max;
+            }
+            else {
+                this->lock_aud_ok = false;
+            }
+        }
+
+        this->lock_date_tex = Text(pu::ui::DefaultFontSize::MediumLarge, LockDateString());
+        this->lock_hint_tex = Text(pu::ui::DefaultFontSize::Small, "Apretá 3 veces el mismo botón");
+        this->lock_ctl_texs[0] = Text(pu::ui::DefaultFontSize::Small, "Brillo");
+        this->lock_ctl_texs[1] = Text(pu::ui::DefaultFontSize::Small, "Volumen");
+
+        std::vector<std::string> labels;
+        if(g_GlobalSettings.IsSuspended()) {
+            std::string title;
+            std::string meta;
+            this->DescribeSuspended(title, meta);
+            this->lock_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, title.empty() ? "Juego en pausa" : title);
+            this->lock_badge_tex = Text(pu::ui::DefaultFontSize::Small, "EN PAUSA");
+            if(const auto played = session::GetSeconds(); played >= 0) {
+                this->lock_played_tex = Text(pu::ui::DefaultFontSize::Small, session::Format(played));
+            }
+            this->lock_opt_keys = { HidNpadButton_A, HidNpadButton_X, HidNpadButton_Y };
+            labels = { "Seguir jugando", "Biblioteca", "Álbum" };
+        }
+        else {
+            this->lock_opt_keys = { HidNpadButton_A, HidNpadButton_Y };
+            labels = { "Biblioteca", "Álbum" };
+        }
+        for(u32 i = 0; i < labels.size(); i++) {
+            this->lock_opt_texs.push_back(Text(pu::ui::DefaultFontSize::Medium, labels.at(i)));
+            const auto key = this->lock_opt_keys.at(i);
+            this->lock_key_texs.push_back(pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), (key == HidNpadButton_A) ? "A" : ((key == HidNpadButton_X) ? "X" : "Y"), { 0x12, 0x12, 0x16, 0xFF }));
+        }
+
+        this->LockRefreshBluetooth(true);
+        this->lock_btn = 0;
+        this->lock_count = 0;
+        this->lock_pop = 0.0;
+        this->lock_drag = -1;
+        this->lock_touching = false;
+        this->lock_out = -1.0;
+        this->lock_anim = 0.0;
+        this->lock_open = true;
+    }
+
+    void EntryMenu::LockRefreshBluetooth(const bool force) {
+        this->lock_bt_poll += this->fx_dt;
+        if(!force && (this->lock_bt_poll < 1.0)) {
+            return;
+        }
+        this->lock_bt_poll = 0.0;
+        const auto dev = bt::GetConnectedAudioDevice();
+        const std::string name = (dev.name[0] != '\0') ? std::string(dev.name, strnlen(dev.name, sizeof(dev.name))) : "";
+        const auto label = name.empty() ? std::string("Bluetooth") : name;
+        if(force || (label != this->lock_bt_str) || (this->lock_bt_tex == nullptr)) {
+            this->lock_bt_str = label;
+            Free(this->lock_bt_tex);
+            Free(this->lock_bt_sub_tex);
+            this->lock_bt_tex = Text(pu::ui::DefaultFontSize::Medium, label);
+            this->lock_bt_sub_tex = Text(pu::ui::DefaultFontSize::Small, name.empty() ? "L para conectar" : "Conectado · L para desconectar");
+        }
+    }
+
+    void EntryMenu::LockBluetooth() {
+        const auto dev = bt::GetConnectedAudioDevice();
+        if(dev.name[0] != '\0') {
+            bt::DisconnectAudioDevice(dev);
+            g_MenuApplication->ShowNotification("Desconectando el audio Bluetooth…", 1800);
+        }
+        else {
+            const auto paired = bt::ListPairedAudioDevices();
+            if(paired.empty()) {
+                g_MenuApplication->ShowNotification("Primero emparejá un dispositivo en Configuración → Bluetooth", 3000);
+            }
+            else {
+                const auto &target = paired.front();
+                bt::ConnectAudioDevice(target);
+                g_MenuApplication->ShowNotification("Conectando a " + std::string(target.name, strnlen(target.name, sizeof(target.name))) + "…", 2200);
+            }
+        }
+        this->Haptic(0.3f, 200.0f, 0.02);
+        this->lock_bt_poll = 0.4;
+    }
+
+    void EntryMenu::LockSetBrightness(const float value) {
+        if(!this->lock_lbl_ok) {
+            return;
+        }
+        this->lock_bright = std::clamp(value, 0.05f, 1.0f);
+        lblSetCurrentBrightnessSetting(this->lock_bright);
+    }
+
+    void EntryMenu::LockSetVolume(const s32 value) {
+        if(!this->lock_aud_ok) {
+            return;
+        }
+        const auto vol = std::clamp(value, 0, this->lock_vol_max);
+        if(vol != this->lock_vol) {
+            this->lock_vol = vol;
+            audctlSetTargetVolume((AudioTarget)this->lock_audio_target, vol);
+        }
+    }
+
+    void EntryMenu::LockPress(const u64 key) {
+        if((this->lock_out >= 0.0) || (std::find(this->lock_opt_keys.begin(), this->lock_opt_keys.end(), key) == this->lock_opt_keys.end())) {
+            return;
+        }
+        if((this->lock_btn != key) || ((this->fx_time - this->lock_last) > 1.2)) {
+            this->lock_btn = key;
+            this->lock_count = 0;
+        }
+        this->lock_count++;
+        this->lock_last = this->fx_time;
+        this->lock_pop = 1.0;
+        this->Haptic(0.25f + 0.15f * this->lock_count, 180.0f + 40.0f * this->lock_count, 0.02);
+        if(this->lock_count >= 3) {
+            this->lock_choice = key;
+            this->lock_out = 0.0;
+            this->NxSfx(2);
+        }
+    }
+
+    void EntryMenu::LockInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        if(this->lock_out >= 0.0) {
+            return;
+        }
+
+        if(!touch_pos.IsEmpty()) {
+            if(!this->lock_touching) {
+                this->lock_touching = true;
+                this->lock_drag = -1;
+                for(const auto &hit : this->lock_hits) {
+                    if((hit.pos >= 20) && Hit(touch_pos.x, touch_pos.y, hit.x - 30, hit.y - 30, hit.w + 60, hit.h + 60)) {
+                        this->lock_drag = hit.pos;
+                    }
+                }
+            }
+            this->lock_tx = touch_pos.x;
+            this->lock_ty = touch_pos.y;
+            if(this->lock_drag >= 20) {
+                for(const auto &hit : this->lock_hits) {
+                    if(hit.pos == this->lock_drag) {
+                        const auto v = std::clamp((double)(touch_pos.x - hit.x) / (double)std::max(1, hit.w), 0.0, 1.0);
+                        if(hit.pos == 20) {
+                            this->LockSetBrightness((float)v);
+                        }
+                        else {
+                            this->LockSetVolume((s32)std::lround(v * this->lock_vol_max));
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if(this->lock_touching) {
+            this->lock_touching = false;
+            if(this->lock_drag < 0) {
+                for(const auto &hit : this->lock_hits) {
+                    if(Hit(this->lock_tx, this->lock_ty, hit.x, hit.y, hit.w, hit.h)) {
+                        if(hit.pos < (s32)this->lock_opt_keys.size()) {
+                            this->LockPress(this->lock_opt_keys.at(hit.pos));
+                        }
+                        else if(hit.pos == 10) {
+                            this->LockBluetooth();
+                        }
+                        break;
+                    }
+                }
+            }
+            this->lock_drag = -1;
+            return;
+        }
+
+        if(keys_down & HidNpadButton_A) {
+            this->LockPress(HidNpadButton_A);
+        }
+        else if(keys_down & HidNpadButton_X) {
+            this->LockPress(HidNpadButton_X);
+        }
+        else if(keys_down & HidNpadButton_Y) {
+            this->LockPress(HidNpadButton_Y);
+        }
+        else if(keys_down & HidNpadButton_AnyUp) {
+            this->LockSetBrightness(this->lock_bright + 0.1f);
+        }
+        else if(keys_down & HidNpadButton_AnyDown) {
+            this->LockSetBrightness(this->lock_bright - 0.1f);
+        }
+        else if(keys_down & HidNpadButton_AnyRight) {
+            this->LockSetVolume(this->lock_vol + 1);
+        }
+        else if(keys_down & HidNpadButton_AnyLeft) {
+            this->LockSetVolume(this->lock_vol - 1);
+        }
+        else if(keys_down & HidNpadButton_L) {
+            this->LockBluetooth();
+        }
+    }
+
+    void EntryMenu::RenderLock(pu::ui::render::Renderer::Ref &drawer) {
+        if(!this->lock_open) {
+            return;
+        }
+        this->lock_anim = std::min(1.0, this->lock_anim + this->fx_dt / 0.45);
+        if(this->lock_out >= 0.0) {
+            this->lock_out = std::min(1.0, this->lock_out + this->fx_dt / 0.40);
+        }
+        const auto in_a = SmoothStep(this->lock_anim);
+        const auto out = (this->lock_out >= 0.0) ? SmoothStep(this->lock_out) : 0.0;
+        const auto vis = in_a * (1.0 - out);
+        const auto al = [&](const double v) {
+            return std::clamp(v * vis, 0.0, 255.0);
+        };
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+        const auto lift = (s32)(-out * 90.0 + (1.0 - in_a) * 24.0);
+        EnsureShapes();
+
+        // Backdrop: the paused game if there is one, otherwise the ambient light of the shelf
+        drawer->RenderRectangleFill({ 0x05, 0x06, 0x08, (u8)(255.0 * (1.0 - out)) }, 0, 0, sw, sh);
+        auto capture = (g_GlobalSettings.IsSuspended() && HasScreenCaptureBackground()) ? GetScreenCaptureBackground()->GetTexture() : nullptr;
+        if(capture != nullptr) {
+            const auto zoom = 1.04 + 0.05 * out;
+            const auto zw = (double)sw * zoom;
+            const auto zh = (double)sh * zoom;
+            drawer->RenderTexture(capture, (s32)(((double)sw - zw) / 2.0), (s32)(((double)sh - zh) / 2.0), pu::ui::render::TextureRenderOptions((u8)al(255.0), (s32)zw, (s32)zh, {}, {}, {}));
+            drawer->RenderRectangleFill({ 0x05, 0x06, 0x0A, (u8)al(168.0) }, 0, 0, sw, sh);
+        }
+        else if(this->amb_cur != nullptr) {
+            drawer->RenderTexture(this->amb_cur, -sw / 8, -sh / 8, pu::ui::render::TextureRenderOptions((u8)al(120.0), sw + sw / 4, sh + sh / 4, {}, {}, {}));
+        }
+        if(g_FadeDown != nullptr) {
+            drawer->RenderTexture(g_FadeDown, 0, 0, pu::ui::render::TextureRenderOptions((u8)al(150.0), sw, 340, {}, {}, {}));
+        }
+        if(g_FadeUp != nullptr) {
+            drawer->RenderTexture(g_FadeUp, 0, sh - 480, pu::ui::render::TextureRenderOptions((u8)al(200.0), sw, 480, {}, {}, {}));
+        }
+
+        // Clock (re-rendered when the minute changes)
+        const auto time_str = LockTimeString();
+        if((time_str != this->lock_time_str) || (this->lock_time_tex == nullptr)) {
+            this->lock_time_str = time_str;
+            Free(this->lock_time_tex);
+            this->lock_time_tex = pu::ui::render::RenderText(pu::ui::MakeDefaultFontName(LockClockFontSize), time_str, { 0xFF, 0xFF, 0xFF, 0xFF });
+            if(this->lock_time_tex == nullptr) {
+                this->lock_time_tex = Text(pu::ui::DefaultFontSize::Large, time_str);
+            }
+        }
+        if(this->lock_time_tex != nullptr) {
+            // If the big font was not available, the regular one is scaled up instead
+            const auto th = TexH(this->lock_time_tex);
+            const auto k = (th < 100) ? (170.0 / (double)std::max(1, th)) : 1.0;
+            const auto dw = TexW(this->lock_time_tex) * k;
+            const auto dh = th * k;
+            drawer->RenderTexture(this->lock_time_tex, (s32)(((double)sw - dw) / 2.0), 96 + lift, pu::ui::render::TextureRenderOptions((u8)al(255.0), (s32)dw, (s32)dh, {}, {}, {}));
+        }
+        Draw(drawer, this->lock_date_tex, (sw - TexW(this->lock_date_tex)) / 2, 300 + lift, al(205.0));
+
+        // Paused game card
+        if(this->lock_title_tex != nullptr) {
+            const s32 cw = 820;
+            const s32 ch = 150;
+            const s32 cx = (sw - cw) / 2;
+            const s32 cy = 392 + lift;
+            RenderGlass(drawer, cx, cy, cw, ch, 30, vis, 150);
+            s32 tx = cx + 36;
+            if(capture != nullptr) {
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(90.0) }, cx + 22, cy + 22, 192, 108, 8);
+                drawer->RenderTexture(capture, cx + 24, cy + 24, pu::ui::render::TextureRenderOptions((u8)al(255.0), 188, 104, {}, {}, {}));
+                tx = cx + 240;
+            }
+            const auto bw = TexW(this->lock_badge_tex);
+            FillRR(drawer, { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, (u8)al(255.0) }, tx, cy + 26, bw + 28, 42, 21);
+            Draw(drawer, this->lock_badge_tex, tx + 14, cy + 32, al(255.0));
+            Draw(drawer, this->lock_played_tex, tx + bw + 46, cy + 32, al(190.0));
+            RenderTextFit(drawer, this->lock_title_tex, (double)tx, cy + 82, (double)(cx + cw - 30 - tx), (u8)al(255.0), false);
+        }
+
+        // Controls: Bluetooth, brightness, volume
+        this->lock_hits.clear();
+        this->LockRefreshBluetooth(false);
+        {
+            const s32 bw = 420;
+            const s32 slw = 400;
+            const s32 h = 92;
+            const s32 gap = 24;
+            s32 x = (sw - (bw + 2 * slw + 2 * gap)) / 2;
+            const s32 y = 590 + lift;
+            const auto connected = this->lock_bt_str != "Bluetooth";
+            RenderGlass(drawer, x, y, bw, h, h / 2, vis, connected ? 200 : 130);
+            if(connected) {
+                FillRR(drawer, { 0x3B, 0x82, 0xF6, (u8)al(150.0) }, x, y, bw, h, h / 2);
+            }
+            RenderTextFit(drawer, this->lock_bt_tex, (double)(x + 40), y + 10, (double)(bw - 70), (u8)al(255.0), false);
+            RenderTextFit(drawer, this->lock_bt_sub_tex, (double)(x + 40), y + 50, (double)(bw - 70), (u8)al(160.0), false);
+            this->lock_hits.push_back({ 10, x, y, bw, h });
+            x += bw + gap;
+
+            for(s32 i = 0; i < 2; i++) {
+                const auto ok = (i == 0) ? this->lock_lbl_ok : this->lock_aud_ok;
+                const auto v = (i == 0) ? (double)this->lock_bright : ((double)this->lock_vol / (double)std::max(1, this->lock_vol_max));
+                RenderGlass(drawer, x, y, slw, h, h / 2, vis, 130);
+                Draw(drawer, this->lock_ctl_texs[i], x + 36, y + 10, al(ok ? 200.0 : 90.0));
+                const s32 tx = x + 40;
+                const s32 tw = slw - 80;
+                const s32 ty = y + 62;
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(50.0) }, tx, ty - 5, tw, 10, 5);
+                if(ok) {
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(235.0) }, tx, ty - 5, std::max(10, (s32)(tw * v)), 10, 5);
+                    const auto knob = (this->lock_drag == 20 + i) ? 17 : 13;
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(255.0) }, tx + (s32)(tw * v) - knob, ty - knob, knob * 2, knob * 2, knob);
+                    this->lock_hits.push_back({ 20 + i, tx, ty - 20, tw, 40 });
+                }
+                x += slw + gap;
+            }
+        }
+
+        // Options: the same button three times
+        this->lock_pop *= std::pow(0.86, this->fx_k);
+        if((this->lock_btn != 0) && (this->lock_out < 0.0) && ((this->fx_time - this->lock_last) > 1.2)) {
+            this->lock_btn = 0;
+            this->lock_count = 0;
+        }
+        {
+            const s32 ow = 430;
+            const s32 oh = 112;
+            const s32 gap = 28;
+            const auto n = (s32)this->lock_opt_texs.size();
+            s32 ox = (sw - (n * ow + (n - 1) * gap)) / 2;
+            const s32 oy = 800 + lift;
+            Draw(drawer, this->lock_hint_tex, (sw - TexW(this->lock_hint_tex)) / 2, oy - 58, al(150.0));
+            for(s32 i = 0; i < n; i++) {
+                const auto active = this->lock_btn == this->lock_opt_keys.at(i);
+                const auto count = active ? this->lock_count : 0;
+                const auto grow = active ? (0.04 * this->lock_pop) : 0.0;
+                const auto w = (s32)(ow * (1.0 + grow));
+                const auto h = (s32)(oh * (1.0 + grow));
+                const auto x = ox - (w - ow) / 2;
+                const auto y = oy - (h - oh) / 2;
+                RenderGlass(drawer, x, y, w, h, h / 2, vis, active ? 195 : 130);
+                if(active) {
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(30.0 + 40.0 * this->lock_pop) }, x, y, w, h, h / 2);
+                }
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(235.0) }, x + 28, y + h / 2 - 30, 60, 60, 30);
+                auto key_tex = this->lock_key_texs.at(i);
+                Draw(drawer, key_tex, x + 58 - TexW(key_tex) / 2, y + h / 2 - TexH(key_tex) / 2, al(255.0));
+                Draw(drawer, this->lock_opt_texs.at(i), x + 110, y + h / 2 - 34, al(255.0));
+                for(s32 dot = 0; dot < 3; dot++) {
+                    const auto filled = dot < (s32)count;
+                    const auto r = filled ? 9 : 7;
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(filled ? 255.0 : 70.0) }, x + 116 + dot * 30 - r, y + h / 2 + 24 - r, r * 2, r * 2, r);
+                }
+                this->lock_hits.push_back({ i, x, y, w, h });
+                ox += ow + gap;
+            }
+        }
+
+        if(this->lock_out >= 1.0) {
+            // Unlocked: go where the chosen button points
+            const auto choice = this->lock_choice;
+            const auto was_suspended = g_GlobalSettings.IsSuspended();
+            this->lock_open = false;
+            this->lock_out = -1.0;
+            this->LockFree();
+            if((choice == HidNpadButton_A) && was_suspended) {
+                this->CloseSheetForResume();
+                if(this->sheet_action_cb) {
+                    this->sheet_action_cb(SheetAction::Resume);
+                }
+            }
+            else if(choice == HidNpadButton_Y) {
+                if(this->sheet_action_cb) {
+                    this->sheet_action_cb(SheetAction::Album);
+                }
+            }
+        }
+    }
+
+    // ---- The back of the case ----
+
+    void EntryMenu::FlipFree() {
+        Free(this->flip_title);
+        Free(this->flip_hint);
+        Free(this->flip_chart_title);
+        for(auto &tex : this->flip_lines) {
+            Free(tex);
+        }
+        this->flip_lines.clear();
+        for(auto &tex : this->flip_days) {
+            Free(tex);
+        }
+        this->flip_icon = nullptr;
+    }
+
+    void EntryMenu::ToggleFlip() {
+        if(this->flip_open) {
+            this->flip_open = false;
+            this->NxSfx(0);
+            return;
+        }
+        const auto nv = (s32)this->shelf_valid.size();
+        if(!ShelfMode || this->IsModalOpen() || this->defer_pending || this->saver_on || (nv == 0) || !this->IsFocusedNonemptyEntry()) {
+            return;
+        }
+        auto &entry = this->GetFocusedEntry();
+        if(!entry.Is<EntryType::Application>() && !entry.Is<EntryType::Homebrew>()) {
+            return;
+        }
+
+        this->FlipFree();
+        entry.TryLoadNacp();
+        this->flip_title = Text(pu::ui::DefaultFontSize::Large, entry.control.name.empty() ? "Sin título" : entry.control.name);
+        for(auto &secs : this->flip_week) {
+            secs = 0;
+        }
+
+        std::vector<std::string> lines;
+        if(entry.Is<EntryType::Application>()) {
+            u64 total_secs = 0;
+            s64 last_posix = -1;
+            const auto launches = this->QueryLaunches(entry, &total_secs, &last_posix);
+            const auto own = session::GetAppStats(entry.app_info.app_id);
+            for(u32 i = 0; i < 7; i++) {
+                this->flip_week[i] = own.week[i];
+            }
+
+            lines.push_back((total_secs > 0) ? ("Jugaste " + FormatPlayed(total_secs)) : "Todavía sin tiempo de juego registrado");
+            s64 days_ago = own.days_since_last;
+            if(last_posix > 0) {
+                const auto diff = (s64)::time(nullptr) - last_posix;
+                const auto console_days = (diff > 0) ? (diff / 86400) : 0;
+                if((days_ago < 0) || (console_days < days_ago)) {
+                    days_ago = console_days;
+                }
+            }
+            if(days_ago == 0) {
+                lines.push_back("Última vez: hoy");
+            }
+            else if(days_ago == 1) {
+                lines.push_back("Última vez: ayer");
+            }
+            else if(days_ago > 1) {
+                lines.push_back("Última vez: hace " + std::to_string(days_ago) + " días");
+            }
+            if(own.streak >= 2) {
+                lines.push_back("Racha: " + std::to_string(own.streak) + " días seguidos");
+            }
+            else if(own.streak == 1) {
+                lines.push_back("Racha: 1 día. Volvé mañana para sumar.");
+            }
+            else {
+                lines.push_back("Sin racha activa");
+            }
+            if(launches > 0) {
+                lines.push_back("Lo abriste " + std::to_string(launches) + ((launches == 1) ? " vez" : " veces"));
+            }
+            if(!entry.control.author.empty()) {
+                lines.push_back(entry.control.author + (entry.control.version.empty() ? "" : ("  ·  Versión " + entry.control.version)));
+            }
+        }
+        else {
+            lines.push_back("Homebrew");
+            if(!entry.control.author.empty()) {
+                lines.push_back(entry.control.author);
+            }
+            if(!entry.control.version.empty()) {
+                lines.push_back("Versión " + entry.control.version);
+            }
+        }
+        for(const auto &line : lines) {
+            this->flip_lines.push_back(Text(pu::ui::DefaultFontSize::Medium, line));
+        }
+
+        static const char *const DayLetters[7] = { "D", "L", "M", "M", "J", "V", "S" };
+        const auto now = ::time(nullptr);
+        const auto lt = localtime(&now);
+        const auto today_wd = (lt != nullptr) ? lt->tm_wday : 0;
+        for(s32 i = 0; i < 7; i++) {
+            this->flip_days[i] = Text(pu::ui::DefaultFontSize::Small, DayLetters[(((today_wd - (6 - i)) % 7) + 7) % 7]);
+        }
+        this->flip_chart_title = Text(pu::ui::DefaultFontSize::Small, "Últimos 7 días");
+        this->flip_hint = Text(pu::ui::DefaultFontSize::Small, "A  Jugar          X  Opciones          −  Volver");
+
+        const auto pos = ((this->shelf_target % nv) + nv) % nv;
+        this->flip_icon = this->IconForPos(pos, true);
+        this->flip_clr = (g_GlobalSettings.IsSuspended() && g_GlobalSettings.IsEntrySuspended(entry)) ? ShelfActiveColor : ShelfCaseColor;
+        this->flip_anim = 0.0;
+        this->flip_touching = false;
+        this->flip_open = true;
+        this->NxSfx(0);
+        this->Haptic(0.35f, 150.0f, 0.03);
+        this->Haptic(0.2f, 240.0f, 0.02, 0.12);
+    }
+
+    void EntryMenu::FlipInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        if(!touch_pos.IsEmpty()) {
+            this->flip_touching = true;
+            this->flip_tx = touch_pos.x;
+            this->flip_ty = touch_pos.y;
+            return;
+        }
+        if(this->flip_touching) {
+            this->flip_touching = false;
+            auto inside = false;
+            for(const auto &hit : this->flip_hits) {
+                inside = inside || Hit(this->flip_tx, this->flip_ty, hit.x, hit.y, hit.w, hit.h);
+            }
+            if(!inside) {
+                this->ToggleFlip();
+            }
+            return;
+        }
+        if(keys_down & HidNpadButton_B) {
+            this->ToggleFlip();
+        }
+        else if(keys_down & (HidNpadButton_A | HidNpadButton_X)) {
+            // Close first, then let the usual handler launch it or open its options
+            this->flip_open = false;
+            this->flip_anim = 0.0;
+            nxdash::g_Modal = false;
+            if(keys_down & HidNpadButton_A) {
+                this->shelf_press = 1.0;
+            }
+            this->cur_entry_input_cb(keys_down & (HidNpadButton_A | HidNpadButton_X));
+        }
+    }
+
+    void EntryMenu::RenderFlip(pu::ui::render::Renderer::Ref &drawer) {
+        this->flip_anim = this->FxApproach(this->flip_anim, this->flip_open ? 1.0 : 0.0, this->flip_open ? 0.17 : 0.26);
+        if(!this->flip_open && (this->flip_anim < 0.004)) {
+            if(this->flip_title != nullptr) {
+                this->FlipFree();
+            }
+            this->flip_anim = 0.0;
+            this->flip_hits.clear();
+            return;
+        }
+        const auto a = SmoothStep(this->flip_anim);
+        const auto al = [&](const double v) {
+            return (u8)std::clamp(v * a, 0.0, 255.0);
+        };
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, al(205.0) }, 0, 0, sw, sh);
+
+        const auto pop = 0.95 + 0.05 * a;
+        const s32 pw = (s32)(1580.0 * pop);
+        const s32 ph = (s32)(760.0 * pop);
+        const s32 px = (sw - pw) / 2;
+        const s32 py = (sh - ph) / 2;
+        RenderGlass(drawer, px, py, pw, ph, 36, a, 205);
+        this->flip_hits.clear();
+        this->flip_hits.push_back({ -1, px, py, pw, ph });
+
+        // The case, opening: the cover swings out to the left and the cartridge shows on the right
+        const auto clr = this->flip_clr;
+        const s32 half_w = 300;
+        const s32 half_h = 560;
+        const s32 tray_x = px + 80 + half_w + 8;
+        const s32 case_y = py + (ph - half_h) / 2 - 20;
+        const s32 cover_x = tray_x - (s32)((half_w + 8) * a);
+        // Tray (right half)
+        FillRR(drawer, { clr.r, clr.g, clr.b, al(255.0) }, tray_x, case_y, half_w, half_h, 12);
+        FillRR(drawer, { 0x00, 0x00, 0x00, al(70.0) }, tray_x + 14, case_y + 14, half_w - 28, half_h - 28, 8);
+        {
+            // Cartridge in its slot
+            const s32 cw = 150;
+            const s32 ch = 176;
+            const s32 cx = tray_x + (half_w - cw) / 2;
+            const s32 cy = case_y + 70 - (s32)((1.0 - a) * 30.0);
+            FillRR(drawer, { 0x00, 0x00, 0x00, al(90.0) }, cx - 8, cy - 8, cw + 16, ch + 16, 12);
+            FillRR(drawer, { 0x2B, 0x2D, 0x36, al(255.0) }, cx, cy, cw, ch, 10);
+            if((this->flip_icon != nullptr) && (this->flip_icon->Get() != nullptr)) {
+                drawer->RenderTexture(this->flip_icon->Get(), cx + 15, cy + 14, pu::ui::render::TextureRenderOptions(al(255.0), 120, 120, {}, {}, {}));
+            }
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(60.0) }, cx + 45, cy + ch - 26, 60, 8, 4);
+            // Manual clips
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(28.0) }, tray_x + 40, case_y + half_h - 150, half_w - 80, 10, 5);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(28.0) }, tray_x + 40, case_y + half_h - 110, half_w - 80, 10, 5);
+        }
+        // Cover (left half, inside face) with the sleeve showing through
+        FillRR(drawer, { clr.r, clr.g, clr.b, al(255.0) }, cover_x, case_y, half_w, half_h, 12);
+        FillRR(drawer, { 0x00, 0x00, 0x00, al(46.0) }, cover_x + 14, case_y + 14, half_w - 28, half_h - 28, 8);
+        if((this->flip_icon != nullptr) && (this->flip_icon->Get() != nullptr)) {
+            const s32 art = half_w - 56;
+            drawer->RenderTexture(this->flip_icon->Get(), cover_x + 28, case_y + (half_h - art) / 2, pu::ui::render::TextureRenderOptions(al(150.0), art, art, {}, {}, {}));
+        }
+        // Hinge between the halves
+        drawer->RenderRectangleFill({ 0x00, 0x00, 0x00, al(110.0) }, tray_x - 6, case_y + 12, 4, half_h - 24);
+        if(g_GlossDown != nullptr) {
+            drawer->RenderTexture(g_GlossDown, cover_x + 6, case_y, pu::ui::render::TextureRenderOptions(al(40.0), tray_x + half_w - cover_x - 12, half_h / 2, {}, {}, {}));
+        }
+
+        // Numbers
+        const s32 x1 = px + 80 + 2 * half_w + 90;
+        const double colw = (double)(px + pw - 70 - x1);
+        RenderTextFit(drawer, this->flip_title, (double)x1, py + 84, colw, al(255.0), false);
+        for(u32 i = 0; i < this->flip_lines.size(); i++) {
+            // Lines arrive one after another
+            const auto p = SmoothStep(std::clamp(this->flip_anim * 1.8 - 0.3 - (double)i * 0.10, 0.0, 1.0));
+            RenderTextFit(drawer, this->flip_lines.at(i), (double)x1 + (1.0 - p) * 20.0, py + 164 + (s32)i * 50, colw, (u8)((i == 0 ? 255.0 : 205.0) * p * (this->flip_open ? 1.0 : a)), false);
+        }
+
+        // Last seven days
+        const s32 chart_y = py + ph - 290;
+        Draw(drawer, this->flip_chart_title, x1, chart_y, al(150.0));
+        u32 week_max = 60;
+        for(const auto secs : this->flip_week) {
+            week_max = std::max(week_max, secs);
+        }
+        for(s32 i = 0; i < 7; i++) {
+            const s32 bar_w = 64;
+            const s32 bar_gap = 26;
+            const s32 bar_max = 120;
+            const s32 bx = x1 + i * (bar_w + bar_gap);
+            const s32 base_y = chart_y + 48 + bar_max;
+            const auto grow = SmoothStep(std::clamp(this->flip_anim * 1.6 - 0.35 - (double)i * 0.05, 0.0, 1.0));
+            const auto h = (s32)std::max(6.0, (double)bar_max * ((double)this->flip_week[i] / (double)week_max) * grow);
+            const auto today = i == 6;
+            const auto played = this->flip_week[i] > 0;
+            FillRR(drawer, today ? pu::ui::Color{ ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, al(played ? 255.0 : 110.0) } : pu::ui::Color{ 0xFF, 0xFF, 0xFF, al(played ? 215.0 : 50.0) }, bx, base_y - h, bar_w, h, std::min(10, h / 2));
+            Draw(drawer, this->flip_days[i], bx + (bar_w - TexW(this->flip_days[i])) / 2, base_y + 12, a * (today ? 255.0 : 150.0));
+        }
+
+        Draw(drawer, this->flip_hint, x1, py + ph - 70, a * 150.0);
+    }
+
+    // ---- "Which game?" duel ----
+
+    void EntryMenu::DuelFree() {
+        Free(this->duel_title);
+        Free(this->duel_hint);
+        Free(this->duel_msg);
+        Free(this->duel_vs);
+        for(auto &tex : this->duel_names) {
+            Free(tex);
+        }
+    }
+
+    void EntryMenu::DuelOpen() {
+        if(this->IsModalOpen() || this->defer_pending) {
+            return;
+        }
+        std::vector<s32> candidates;
+        for(s32 pos = 0; pos < (s32)this->shelf_valid.size(); pos++) {
+            const auto &entry = this->cur_entries.at(this->shelf_valid.at(pos));
+            if(entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) {
+                candidates.push_back(pos);
+            }
+        }
+        if(candidates.size() < 2) {
+            g_MenuApplication->ShowNotification("Hacen falta al menos dos juegos en este estante", 2200);
+            return;
+        }
+        this->DuelFree();
+        this->duel_title = Text(pu::ui::DefaultFontSize::Large, "¿A qué juego?");
+        this->duel_vs = Text(pu::ui::DefaultFontSize::Large, "o");
+        this->duel_rolls = 0;
+        this->duel_tired = false;
+        this->duel_pos[0] = -1;
+        this->duel_pos[1] = -1;
+        this->duel_sel = 0;
+        this->duel_anim = 0.0;
+        this->duel_touching = false;
+        this->duel_open = true;
+        this->DuelRoll();
+    }
+
+    void EntryMenu::DuelRoll() {
+        if(this->duel_rolls >= 3) {
+            // Three throws is the deal
+            if(!this->duel_tired) {
+                this->duel_tired = true;
+                static const char *const Lines[] = {
+                    "El dado se cansó. Es uno de estos dos, sin vueltas.",
+                    "Tres tiradas y ni una te convenció. Elegí con el corazón.",
+                    "No hay cuarta. El destino ya habló dos veces.",
+                    "El dado pidió vacaciones. Te quedás con estos.",
+                };
+                Free(this->duel_msg);
+                this->duel_msg = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), Lines[armGetSystemTick() % (sizeof(Lines) / sizeof(Lines[0]))], { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, 0xFF });
+            }
+            this->Haptic(0.7f, 110.0f, 0.05);
+            this->Haptic(0.7f, 110.0f, 0.05, 0.12);
+            this->NxSfx(1);
+            return;
+        }
+
+        std::vector<s32> candidates;
+        for(s32 pos = 0; pos < (s32)this->shelf_valid.size(); pos++) {
+            const auto &entry = this->cur_entries.at(this->shelf_valid.at(pos));
+            if(entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) {
+                candidates.push_back(pos);
+            }
+        }
+        if(candidates.size() < 2) {
+            this->duel_open = false;
+            return;
+        }
+        // xorshift on the system tick: plenty for picking two games
+        u64 seed = armGetSystemTick() | 1;
+        const auto next = [&]() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            return seed;
+        };
+        const auto prev_a = this->duel_pos[0];
+        const auto prev_b = this->duel_pos[1];
+        s32 pick_a = 0;
+        s32 pick_b = 0;
+        for(u32 attempt = 0; attempt < 12; attempt++) {
+            pick_a = candidates.at(next() % candidates.size());
+            pick_b = candidates.at(next() % candidates.size());
+            const auto same_pair = ((pick_a == prev_a) && (pick_b == prev_b)) || ((pick_a == prev_b) && (pick_b == prev_a));
+            if((pick_a != pick_b) && (!same_pair || (candidates.size() == 2))) {
+                break;
+            }
+        }
+        if(pick_a == pick_b) {
+            pick_b = candidates.at((std::find(candidates.begin(), candidates.end(), pick_a) - candidates.begin() + 1) % candidates.size());
+        }
+        this->duel_pos[0] = pick_a;
+        this->duel_pos[1] = pick_b;
+        this->duel_rolls++;
+        this->duel_spin = 0.0;
+        this->duel_tick_t = 0.0;
+        this->duel_sel = 0;
+
+        for(u32 k = 0; k < 2; k++) {
+            auto &entry = this->cur_entries.at(this->shelf_valid.at(this->duel_pos[k]));
+            entry.TryLoadNacp();
+            this->IconForPos(this->duel_pos[k], true);
+            Free(this->duel_names[k]);
+            this->duel_names[k] = Text(pu::ui::DefaultFontSize::MediumLarge, entry.control.name.empty() ? "Sin título" : entry.control.name);
+            this->duel_show[k] = this->duel_pos[k];
+        }
+        Free(this->duel_hint);
+        this->duel_hint = Text(pu::ui::DefaultFontSize::Small, "Izquierda / derecha  Elegir          A  Confirmar          Y  Tirar de nuevo (" + std::to_string(this->duel_rolls) + " de 3)          B  Salir");
+    }
+
+    void EntryMenu::DuelClose(const bool pick) {
+        this->duel_open = false;
+        if(pick && (this->duel_pos[this->duel_sel] >= 0)) {
+            this->ShelfMoveToPos(this->duel_pos[this->duel_sel]);
+            this->shelf_press = 1.0;
+            this->NxSfx(2);
+            this->Haptic(0.5f, 180.0f, 0.04);
+        }
+    }
+
+    void EntryMenu::DuelInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        const auto spinning = this->duel_spin < 1.0;
+        if(!touch_pos.IsEmpty()) {
+            this->duel_touching = true;
+            this->duel_tx = touch_pos.x;
+            this->duel_ty = touch_pos.y;
+            return;
+        }
+        if(this->duel_touching) {
+            this->duel_touching = false;
+            if(spinning) {
+                return;
+            }
+            for(const auto &hit : this->duel_hits) {
+                if(Hit(this->duel_tx, this->duel_ty, hit.x, hit.y, hit.w, hit.h)) {
+                    if(hit.pos == this->duel_sel) {
+                        this->DuelClose(true);
+                    }
+                    else {
+                        this->duel_sel = hit.pos;
+                        this->Haptic(0.22f, 260.0f, 0.012);
+                    }
+                    return;
+                }
+            }
+            this->DuelClose(false);
+            return;
+        }
+
+        if(keys_down & HidNpadButton_B) {
+            this->DuelClose(false);
+        }
+        else if(spinning) {
+            return;
+        }
+        else if(keys_down & (HidNpadButton_AnyLeft | HidNpadButton_AnyRight)) {
+            this->duel_sel = (keys_down & HidNpadButton_AnyLeft) ? 0 : 1;
+            this->Haptic(0.22f, 260.0f, 0.012);
+        }
+        else if(keys_down & HidNpadButton_A) {
+            this->DuelClose(true);
+        }
+        else if(keys_down & HidNpadButton_Y) {
+            this->DuelRoll();
+        }
+    }
+
+    void EntryMenu::RenderDuel(pu::ui::render::Renderer::Ref &drawer) {
+        this->duel_anim = this->FxApproach(this->duel_anim, this->duel_open ? 1.0 : 0.0, this->duel_open ? 0.18 : 0.28);
+        if(!this->duel_open && (this->duel_anim < 0.004)) {
+            if(this->duel_title != nullptr) {
+                this->DuelFree();
+            }
+            this->duel_anim = 0.0;
+            this->duel_hits.clear();
+            return;
+        }
+        const auto a = SmoothStep(this->duel_anim);
+        const auto al = [&](const double v) {
+            return (u8)std::clamp(v * a, 0.0, 255.0);
+        };
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, al(218.0) }, 0, 0, sw, sh);
+
+        // The reels: covers flick by, slower and slower, until the two picks land
+        const auto nv = (s32)this->shelf_valid.size();
+        if(this->duel_open && (this->duel_spin < 1.0) && (nv > 0)) {
+            this->duel_spin = std::min(1.0, this->duel_spin + this->fx_dt / 1.05);
+            this->duel_tick_t -= this->fx_dt;
+            if(this->duel_tick_t <= 0.0) {
+                this->duel_tick_t = 0.045 + 0.26 * this->duel_spin * this->duel_spin;
+                this->duel_tick++;
+                for(u32 k = 0; k < 2; k++) {
+                    // Only covers that are already loaded take part in the blur
+                    for(u32 attempt = 0; attempt < 6; attempt++) {
+                        const auto pos = (s32)((this->duel_tick * 7 + k * 13 + attempt * 5 + (u32)this->duel_pos[k]) % (u32)nv);
+                        if(this->IconForPos(pos, false) != nullptr) {
+                            this->duel_show[k] = pos;
+                            break;
+                        }
+                    }
+                }
+                this->Haptic(0.18f, 280.0f, 0.010);
+            }
+            if(this->duel_spin >= 1.0) {
+                this->duel_show[0] = this->duel_pos[0];
+                this->duel_show[1] = this->duel_pos[1];
+                this->Haptic(0.6f, 150.0f, 0.05);
+                this->NxSfx(2);
+            }
+        }
+        const auto landed = this->duel_spin >= 1.0;
+
+        Draw(drawer, this->duel_title, (sw - TexW(this->duel_title)) / 2, 78 - (s32)((1.0 - a) * 20.0), a * 255.0);
+        if(this->duel_tired) {
+            Draw(drawer, this->duel_msg, (sw - TexW(this->duel_msg)) / 2, 150, a * 255.0);
+        }
+
+        this->duel_hits.clear();
+        const s32 cw = 560;
+        const s32 ch = 660;
+        const s32 gap = 150;
+        const s32 cy = 215;
+        for(s32 k = 0; k < 2; k++) {
+            const auto selected = landed && (k == this->duel_sel);
+            // Cards come in from the sides
+            const auto slide = (s32)((1.0 - a) * 140.0) * ((k == 0) ? -1 : 1);
+            const auto grow = selected ? 14 : 0;
+            const s32 x = sw / 2 + ((k == 0) ? (-gap / 2 - cw) : (gap / 2)) + slide - grow;
+            const s32 y = cy - grow;
+            const s32 w = cw + 2 * grow;
+            const s32 h = ch + 2 * grow;
+            if(selected) {
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(46.0) }, x - 12, y - 12, w + 24, h + 24, 46);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(235.0) }, x - 3, y - 3, w + 6, h + 6, 39);
+            }
+            RenderGlass(drawer, x, y, w, h, 36, a, selected ? 235 : 190);
+            // The game as a case front
+            const s32 art = w - 110;
+            const s32 ax = x + 55;
+            const s32 ay = y + 48;
+            FillRR(drawer, { ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, al(255.0) }, ax - 14, ay - 34, art + 28, art + 48, 12);
+            drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, al(90.0) }, ax - 2, ay - 33, art + 4, 1);
+            auto icon = this->IconForPos(this->duel_show[k], false);
+            if((icon != nullptr) && (icon->Get() != nullptr)) {
+                drawer->RenderTexture(icon->Get(), ax, ay, pu::ui::render::TextureRenderOptions(al(landed ? 255.0 : 170.0), art, art, {}, {}, {}));
+            }
+            else {
+                drawer->RenderRectangleFill({ 0x1C, 0x1E, 0x28, al(255.0) }, ax, ay, art, art);
+            }
+            if(landed) {
+                RenderTextFit(drawer, this->duel_names[k], (double)x + (double)w / 2.0, ay + art + 40, (double)(w - 70), al(selected ? 255.0 : 170.0), true);
+            }
+            this->duel_hits.push_back({ k, x, y, w, h });
+        }
+        Draw(drawer, this->duel_vs, (sw - TexW(this->duel_vs)) / 2, cy + ch / 2 - 40, a * 170.0);
+        Draw(drawer, this->duel_hint, (sw - TexW(this->duel_hint)) / 2, sh - 150, a * 150.0);
     }
 
 }
