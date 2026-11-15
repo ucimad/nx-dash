@@ -31,7 +31,7 @@ namespace ul::menu::ui {
     }
 
     void InputBar::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
-        drawer->RenderTexture(this->bar_bg, x, y, pu::ui::render::TextureRenderOptions(Alpha, {}, {}, {}, {}, {}));
+        // NX Dash: the hints float on the scene, no bar behind them
 
         auto cur_x = x + SideMargin;
         for(const auto &[_, text] : this->inputs) {

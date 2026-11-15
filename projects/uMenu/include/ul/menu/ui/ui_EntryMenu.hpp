@@ -179,6 +179,8 @@ namespace ul::menu::ui {
             double shelf_sheen = 1.0;
             bool shelf_sheen_pending = true;
             bool tab_hl_init = false;
+            bool tab_off_init = false;
+            double tab_off = 0.0;
             double tab_hl_x = 0.0;
             double tab_hl_w = 0.0;
             double sheet_sel_y = -1.0;

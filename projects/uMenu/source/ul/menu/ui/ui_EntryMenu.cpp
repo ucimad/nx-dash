@@ -1611,7 +1611,7 @@ namespace ul::menu::ui {
             }
             const auto tw = pu::ui::render::GetTextureWidth(this->shelf_empty_text);
             const auto th = pu::ui::render::GetTextureHeight(this->shelf_empty_text);
-            drawer->RenderTexture(this->shelf_empty_text, x + (this->GetWidth() - tw) / 2, y + (s32)(this->GetHeight() * 0.45) - th / 2);
+            drawer->RenderTexture(this->shelf_empty_text, x + (this->GetWidth() - tw) / 2, y + (s32)(this->GetHeight() * 0.355) - th / 2);
             this->shelf_hits.clear();
             return;
         }
@@ -1634,7 +1634,7 @@ namespace ul::menu::ui {
         const double gap = H * 0.014;
         const double U = H * 1.3;
         const double cx = (double)x + area_w / 2.0;
-        const double cy = (double)y + area_h * 0.45;
+        const double cy = (double)y + area_h * 0.355;
 
         // Pre-computed integral of the scale curve: far cases pack tighter on screen
         if(this->shelf_xs.empty() || (this->shelf_xs_u != U)) {
@@ -2032,25 +2032,19 @@ namespace ul::menu::ui {
                 widths.push_back(w);
                 total += w + 14;
             }
-            const auto left = x + 110;
-            const auto max_right = x + (s32)area_w - 110;
-            s32 shift = 0;
-            if(left + cur_right > max_right) {
-                shift = (left + cur_right) - max_right;
+            // Bottom row, no capsule: the current shelf stays centred and the row slides under it
+            const auto mid = (double)x + area_w / 2.0;
+            const auto want = mid - (double)(cur_left + (cur_right - cur_left) / 2);
+            if(!this->tab_off_init) {
+                this->tab_off_init = true;
+                this->tab_off = want;
             }
-            if(left + cur_left - shift < left) {
-                shift = cur_left;
-            }
-            s32 tx = left - shift;
-            const auto ty = y + 18;
-            const auto th = 56;
+            this->tab_off = this->FxApproach(this->tab_off, want, 0.24);
+            s32 tx = (s32)this->tab_off;
+            const auto th = 50;
+            const auto ty = y + (s32)area_h - th - 24;
             {
-                const auto cap_x = std::max(tx - 8, x + 60);
-                const auto cap_r = std::min(tx + total - 14 + 8, x + (s32)area_w - 60);
-                RenderGlass(drawer, cap_x, ty - 8, cap_r - cap_x, th + 16, (th + 16) / 2, 1.0, 120);
-            }
-            {
-                // The highlight slides between tabs instead of jumping
+                // A thin underline that slides between shelves
                 const auto hl_x = (double)(tx + cur_left);
                 const auto hl_w = (double)(cur_right - cur_left);
                 if(!this->tab_hl_init) {
@@ -2060,8 +2054,7 @@ namespace ul::menu::ui {
                 }
                 this->tab_hl_x = this->FxApproach(this->tab_hl_x, hl_x, 0.26);
                 this->tab_hl_w = this->FxApproach(this->tab_hl_w, hl_w, 0.26);
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, 0x3C }, (s32)this->tab_hl_x, ty, (s32)this->tab_hl_w, th, th / 2);
-                drawer->RenderRectangleFill({ 0xFF, 0xFF, 0xFF, 0x50 }, (s32)this->tab_hl_x + th / 2, ty + 1, (s32)this->tab_hl_w - th, 1);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, 0xE6 }, (s32)this->tab_hl_x + 22, ty + th - 4, (s32)this->tab_hl_w - 44, 3, 1);
             }
             for(u32 i = 0; i < this->shelf_cats.size(); i++) {
                 const auto w = widths.at(i);
@@ -2069,7 +2062,9 @@ namespace ul::menu::ui {
                 if((tx + w > x) && (tx < x + (s32)area_w)) {
                     auto tex = this->shelf_tab_texts.at(i);
                     const auto tth = pu::ui::render::GetTextureHeight(tex);
-                    drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions(is_cur ? 0xFF : 0x8C, {}, {}, {}, {}, {}));
+                    const auto dist = std::abs((double)(tx + w / 2) - mid);
+                    const auto edge = std::clamp(1.0 - (dist - 500.0) / 360.0, 0.0, 1.0);
+                    drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions((u8)((is_cur ? 255.0 : 120.0) * edge), {}, {}, {}, {}, {}));
                     this->shelf_tab_hits.push_back({ (s32)i, tx, ty, w, th });
                 }
                 tx += w + 14;
@@ -2102,7 +2097,7 @@ namespace ul::menu::ui {
         // Fade the text in while the shelf settles
         const auto settle = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 2.5, 0.0, 1.0);
         const auto cx = (double)x + area_w / 2.0;
-        const auto ty = y + (s32)(area_h * 0.815);
+        const auto ty = y + (s32)(area_h * 0.75);
         const auto travel = std::clamp((double)this->shelf_target - this->shelf_s, -1.0, 1.0) * 34.0;
         const auto intro = std::clamp((this->shelf_intro - 0.08) / 0.30, 0.0, 1.0);
         {
@@ -2121,7 +2116,7 @@ namespace ul::menu::ui {
         }
         RenderTextFit(drawer, this->shelf_info_title, cx + travel, ty, area_w - 260.0, (u8)(255.0 * settle * intro), true);
         const auto settle_late = std::clamp(1.0 - std::abs((double)this->shelf_target - this->shelf_s) * 6.0, 0.0, 1.0);
-        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 70 + (s32)((1.0 - settle_late) * 8.0), area_w - 260.0, (u8)(150.0 * settle_late * intro), true);
+        RenderTextFit(drawer, this->shelf_info_meta, cx, ty + 58 + (s32)((1.0 - settle_late) * 8.0), area_w - 260.0, (u8)(150.0 * settle_late * intro), true);
     }
 
     // ---- HOME game sheet ----
@@ -2636,7 +2631,7 @@ namespace ul::menu::ui {
         const double ws = H * 0.085;
         const double gap = H * 0.014;
         const double cx = (double)x + area_w / 2.0;
-        const double cy = (double)y + area_h * 0.45;
+        const double cy = (double)y + area_h * 0.355;
         // A soft pulse travelling outwards from the middle
         const auto pulse = [&](const double dist) {
             return 0.5 + 0.5 * std::sin(this->fx_time * 4.2 - dist * 0.55);
@@ -2654,9 +2649,9 @@ namespace ul::menu::ui {
             }
         }
         // Title and details placeholders
-        const auto ty = y + (s32)(area_h * 0.815);
+        const auto ty = y + (s32)(area_h * 0.75);
         FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(22.0 + 16.0 * pulse(1.0)) }, (s32)(cx - 260.0), ty + 8, 520, 34, 17);
-        FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(14.0 + 12.0 * pulse(2.0)) }, (s32)(cx - 170.0), ty + 72, 340, 22, 11);
+        FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(14.0 + 12.0 * pulse(2.0)) }, (s32)(cx - 170.0), ty + 62, 340, 22, 11);
     }
 
     // ---- Rumble and extra sounds ----
