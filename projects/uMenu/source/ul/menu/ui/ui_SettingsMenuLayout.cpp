@@ -1,4 +1,5 @@
 #include <ul/menu/ui/ui_SettingsMenuLayout.hpp>
+#include <ul/menu/ui/ui_NxDashText.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 #include <ul/fs/fs_Stdio.hpp>
 #include <ul/net/net_Service.hpp>
@@ -697,6 +698,34 @@ namespace ul::menu::ui {
                 .static_description = GetLanguageString("set_ip_addr"),
                 .dyn_value_cb = []() {
                     return net::GetConsoleIpAddress();
+                }
+            });
+
+            g_SettingMenuEntries.push_back({
+                .menu = SettingMenu::uLaunch,
+                .setting = Setting::NxDashLanguage,
+                .editable = true,
+                .static_description = nxt::T("set_lang"),
+                .dyn_value_cb = []() {
+                    const auto code = nxt::GetProfileLanguage(g_GlobalSettings.system_status.selected_user);
+                    if(code == "en") {
+                        return std::string("English");
+                    }
+                    if(code == "es") {
+                        return std::string("Español");
+                    }
+                    return nxt::T("set_lang_system");
+                },
+                .select_cb = [](SettingSubmenu&) {
+                    const auto opt = g_MenuApplication->DisplayDialog(nxt::T("set_lang"), nxt::T("set_lang_q"), { nxt::T("set_lang_system"), "English", "Español", GetLanguageString("cancel") }, true);
+                    if((opt < 0) || (opt > 2)) {
+                        return SettingResult::NoChange;
+                    }
+                    static const char *const Codes[3] = { "", "en", "es" };
+                    nxt::SetProfileLanguage(g_GlobalSettings.system_status.selected_user, Codes[opt]);
+                    nxt::ApplyProfileLanguage();
+                    g_MenuApplication->ShowNotification(nxt::T("set_lang_done"));
+                    return SettingResult::Changed;
                 }
             });
 

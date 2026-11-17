@@ -46,7 +46,7 @@ namespace ul::menu::ui {
             using FocusedEntryChangeStartedCallback = std::function<void()>;
 
             // NX Dash callbacks into the main layout
-            enum class SheetAction : u32 { Resume = 0, Close = 1, Album = 2, Library = 3 };
+            enum class SheetAction : u32 { Resume = 0, Close = 1, Album = 2, Library = 3, PlayOther = 4 };
             using SheetActionCallback = std::function<void(const SheetAction)>;
             using ShelfFolderCallback = std::function<void(const std::string&, const std::string&)>;
 
@@ -157,6 +157,7 @@ namespace ul::menu::ui {
             };
             std::vector<ShelfCategory> shelf_cats;
             std::string shelf_cats_sig;
+            u32 lang_gen = 0;
             bool shelf_root_loaded = false;
             bool shelf_restore_pending = false;
             s32 shelf_cat = 0;
@@ -291,6 +292,18 @@ namespace ul::menu::ui {
             s32 lock_tx = 0;
             s32 lock_ty = 0;
             double lock_bt_poll = 0.0;
+            s32 lock_sel = 0;
+            double lock_lens_y = 0.0;
+            double lock_lens_h = 0.0;
+            bool lock_lens_init = false;
+            bool lock_bt_connected = false;
+            bool lock_bt_paired = false;
+            std::string lock_bt_sub_str;
+            std::string lock_hint_str;
+            std::string lock_val_str[2];
+            pu::sdl2::Texture lock_val_texs[2] = {};
+            pu::sdl2::Texture sheet_icons_lock[7] = {};
+            void LockActivate();
             void LockFree();
             void LockInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
             void LockPress(const u64 key);
@@ -392,6 +405,32 @@ namespace ul::menu::ui {
             void SheetFree();
             void SheetInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
             void SheetExecute(const u32 action);
+            // Pause panel: 0 continue, 1 icon row, 2 play something else
+            s32 sheet_zone = 0;
+            s32 sheet_icon_sel = 0;
+            s32 sheet_other_sel = 0;
+            double sheet_lx = 0.0;
+            double sheet_ly = 0.0;
+            double sheet_lw = 0.0;
+            double sheet_lh = 0.0;
+            bool sheet_lens_init = false;
+            pu::sdl2::Texture sheet_cont_tex = nullptr;
+            pu::sdl2::Texture sheet_other_label = nullptr;
+            pu::sdl2::Texture sheet_icon_label = nullptr;
+            std::string sheet_icon_label_str;
+            std::string sheet_hint_str;
+            pu::sdl2::Texture sheet_icons[5] = {};
+            bool sheet_icons_loaded = false;
+            std::vector<u64> sheet_other_ids;
+            std::vector<pu::sdl2::TextureHandle::Ref> sheet_other_icons;
+            std::vector<std::string> sheet_other_names;
+            u64 sheet_play_other = 0;
+            std::string sheet_bt_name;
+            bool sheet_bt_connected = false;
+            bool sheet_bt_paired = false;
+            double sheet_bt_poll = 0.0;
+            void SheetActivate();
+            void SheetRefreshBluetooth();
 
             inline bool IsNotInSwipe() {
                 return this->swipe_mode == SwipeMode::None;
@@ -504,6 +543,12 @@ namespace ul::menu::ui {
             inline void SetNxDashCallbacks(SheetActionCallback sheet_cb, ShelfFolderCallback folder_cb) {
                 this->sheet_action_cb = sheet_cb;
                 this->shelf_folder_cb = folder_cb;
+            }
+
+            void FocusAppEntry(const u64 app_id);
+
+            inline u64 GetPlayOtherAppId() {
+                return this->sheet_play_other;
             }
 
             inline bool IsSheetOpen() {

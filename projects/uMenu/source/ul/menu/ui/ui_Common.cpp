@@ -1,4 +1,5 @@
 #include <ul/menu/ui/ui_Common.hpp>
+#include <ul/menu/ui/ui_NxDashText.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 #include <ul/menu/ui/ui_MainMenuLayout.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
@@ -251,6 +252,8 @@ namespace ul::menu::ui {
 
     void GlobalSettings::SetSelectedUser(const AccountUid user_id) {
         this->system_status.selected_user = user_id;
+        // NX Dash: each profile can have its own menu language
+        nxt::ApplyProfileLanguage();
 
         this->InitializeEntries();
         // The last_menu_fs_path sent by uSystem was empty if a user was not yet selected

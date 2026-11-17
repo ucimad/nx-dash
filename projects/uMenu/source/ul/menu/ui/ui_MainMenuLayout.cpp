@@ -1,5 +1,6 @@
 #include <ul/menu/ui/ui_NxDashSession.hpp>
 #include <ul/menu/ui/ui_MainMenuLayout.hpp>
+#include <ul/menu/ui/ui_NxDashText.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
 #include <ul/fs/fs_Stdio.hpp>
 #include <ul/menu/menu_Cache.hpp>
@@ -449,16 +450,16 @@ namespace ul::menu::ui {
                         }
 
                         // NX Dash: shelves are categories (top-level folders)
-                        options.push_back("Mover a categoría...");
+                        options.push_back(nxt::T("opt_move"));
                         const s32 move_cat_opt = cur_option_idx; cur_option_idx++;
-                        options.push_back("Nueva categoría con este juego...");
+                        options.push_back(nxt::T("opt_new"));
                         const s32 new_cat_opt = cur_option_idx; cur_option_idx++;
 
                         const auto has_non_root_opts = !this->entry_menu->IsInRoot();
                         s32 entry_move_parent_opt = -1;
                         s32 entry_move_root_opt = -1;
                         if(has_non_root_opts) {
-                            options.push_back("Quitar de la categoría");
+                            options.push_back(nxt::T("opt_remove"));
                             entry_move_root_opt = cur_option_idx; cur_option_idx++;
                         }
 
@@ -799,6 +800,30 @@ namespace ul::menu::ui {
                     ShowAlbum();
                     break;
                 }
+                case EntryMenu::SheetAction::PlayOther: {
+                    // Close the paused game and start the chosen one, no detour through the shelf
+                    const auto app_id = this->entry_menu->GetPlayOtherAppId();
+                    if(app_id == 0) {
+                        break;
+                    }
+                    this->DoTerminateApplication();
+                    this->entry_menu->CloseSheetForResume();
+                    this->entry_menu->FocusAppEntry(app_id);
+                    pu::audio::PlaySfx(this->launch_app_sfx);
+                    this->PlayLaunchTransition();
+                    const auto rc = smi::LaunchApplication(app_id);
+                    if(R_SUCCEEDED(rc)) {
+                        session::Start(app_id);
+                        g_MenuApplication->Finalize();
+                    }
+                    else {
+                        this->entry_menu->ResetLaunchAnim();
+                        g_MenuApplication->FadeIn();
+                        g_MenuApplication->ResetFade();
+                        g_MenuApplication->ShowNotification(GetLanguageString("app_launch_error") + ": " + util::FormatResultDisplay(rc));
+                    }
+                    break;
+                }
                 default:
                     break;
             }
@@ -946,7 +971,7 @@ namespace ul::menu::ui {
                 }
 
                 if(!this->entry_menu->IsAnySelected()) {
-                    this->input_bar->AddSetInput(HidNpadButton_Y, nxdash::On("roulette") ? std::string("¿A qué juego?") : GetLanguageString("input_select_entry"));
+                    this->input_bar->AddSetInput(HidNpadButton_Y, nxdash::On("roulette") ? nxt::T("in_roulette") : GetLanguageString("input_select_entry"));
                 }
 
                 if(this->entry_menu->IsAnySelected()) {
@@ -982,7 +1007,7 @@ namespace ul::menu::ui {
                 this->input_bar->AddSetInput(InputBar::MetaHomeNpadButton, GetLanguageString("input_resume_suspended"));
             }
 
-            this->input_bar->AddSetInput(HidNpadButton_Minus, "Dorso de la caja");
+            this->input_bar->AddSetInput(HidNpadButton_Minus, nxt::T("in_flip"));
 
             this->input_bar->AddSetInput(HidNpadButton_ZL | HidNpadButton_ZR, GetLanguageString("input_quick_menu"));
         }
@@ -1242,7 +1267,7 @@ namespace ul::menu::ui {
             }
         }
         if(folders.empty()) {
-            g_MenuApplication->ShowNotification("Todavía no hay categorías: elegí \"Nueva categoría\"");
+            g_MenuApplication->ShowNotification(nxt::T("no_cats"));
             return;
         }
         // Dialogs only fit a handful of options
@@ -1255,14 +1280,14 @@ namespace ul::menu::ui {
             options.push_back(folder.folder_info.name);
         }
         options.push_back(GetLanguageString("cancel"));
-        const auto option = g_MenuApplication->DisplayDialog("Mover a categoría", "¿A qué estante va este juego?", options, true);
+        const auto option = g_MenuApplication->DisplayDialog(nxt::T("move_title"), nxt::T("move_q"), options, true);
         if((option >= 0) && (option < (s32)folders.size())) {
             Entry entry_copy(entry);
             entry_copy.MoveTo(folders.at(option).GetFolderPath());
             pu::audio::PlaySfx(this->entry_move_into_sfx);
             this->entry_menu->NotifyEntryRemoved(entry);
             this->entry_menu->OrganizeUpdateEntries();
-            g_MenuApplication->ShowNotification("Movido a " + std::string(folders.at(option).folder_info.name));
+            g_MenuApplication->ShowNotification(nxt::Sub(nxt::T("moved"), "name", std::string(folders.at(option).folder_info.name)));
         }
     }
 
@@ -1271,7 +1296,7 @@ namespace ul::menu::ui {
         UL_RC_ASSERT(swkbdCreate(&swkbd, 0));
         swkbdConfigMakePresetDefault(&swkbd);
         swkbdConfigSetType(&swkbd, SwkbdType_All);
-        swkbdConfigSetGuideText(&swkbd, "Nombre de la categoría");
+        swkbdConfigSetGuideText(&swkbd, nxt::T("cat_name").c_str());
         char name_buf[500] = {};
         const auto rc = ShowSwkbd(&swkbd, name_buf, sizeof(name_buf));
         swkbdClose(&swkbd);
@@ -1294,7 +1319,7 @@ namespace ul::menu::ui {
         entry_copy.MoveTo(folder_entry.GetFolderPath());
         this->entry_menu->NotifyEntryRemoved(entry);
         this->entry_menu->OrganizeUpdateEntries();
-        g_MenuApplication->ShowNotification("Categoría \"" + name + "\" creada");
+        g_MenuApplication->ShowNotification(nxt::Sub(nxt::T("cat_created"), "name", name));
     }
 
     void MainMenuLayout::PlayLaunchTransition() {

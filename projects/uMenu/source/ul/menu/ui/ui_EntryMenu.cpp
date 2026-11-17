@@ -3,6 +3,7 @@
 #include <ctime>
 #include <cstring>
 #include <ul/menu/ui/ui_EntryMenu.hpp>
+#include <ul/menu/ui/ui_NxDashText.hpp>
 #include <algorithm>
 #include <functional>
 #include <cmath>
@@ -301,6 +302,12 @@ namespace ul::menu::ui {
 
     void EntryMenu::OnRender(pu::ui::render::Renderer::Ref &drawer, const s32 x, const s32 y) {
         const auto time_start = std::chrono::steady_clock::now();
+        if(this->lang_gen != nxt::g_LangGen) {
+            // The profile language changed: rebuild shelf names and info text
+            this->lang_gen = nxt::g_LangGen;
+            this->shelf_cats_sig.clear();
+            this->ShelfClearInfo();
+        }
 
         const auto loaded_pending_load_img_entry_ext_idx = this->pending_load_img_entry_ext_idx;
         if(!this->pending_load_img_done) {
@@ -1171,9 +1178,9 @@ namespace ul::menu::ui {
 
         this->shelf_cats.clear();
         if(this->shelf_root_has_recent) {
-            this->shelf_cats.push_back({ "Recientes", root, ShelfFilter::Recent });
+            this->shelf_cats.push_back({ nxt::T("cat_recent"), root, ShelfFilter::Recent });
         }
-        this->shelf_cats.push_back({ "Juegos", root, ShelfFilter::Games });
+        this->shelf_cats.push_back({ nxt::T("cat_games"), root, ShelfFilter::Games });
         for(const auto &[name, path] : this->shelf_root_folders) {
             this->shelf_cats.push_back({ name, path, ShelfFilter::Folder });
         }
@@ -1181,7 +1188,7 @@ namespace ul::menu::ui {
             this->shelf_cats.push_back({ "Homebrew", root, ShelfFilter::Homebrew });
         }
         if(this->shelf_root_has_special) {
-            this->shelf_cats.push_back({ "Sistema", root, ShelfFilter::System });
+            this->shelf_cats.push_back({ nxt::T("cat_system"), root, ShelfFilter::System });
         }
 
         if(this->IsInRoot()) {
@@ -1378,24 +1385,10 @@ namespace ul::menu::ui {
             if((keys_held & combo) == combo) {
                 if(!this->tip_combo_down) {
                     this->tip_combo_down = true;
-                    static const char *const Tips[] = {
-                        "Mantené izquierda o derecha para recorrer el estante de corrido.",
-                        "L y R saltan de a cinco juegos.",
-                        "El botón menos da vuelta la caja y muestra cuánto jugaste.",
-                        "Y arma un duelo entre dos juegos al azar.",
-                        "La caja dorada es el juego que quedó en pausa.",
-                        "Arriba y abajo cambian de estante.",
-                        "X sobre un juego: mover a una categoría o crear una nueva.",
-                        "Girá la palanca derecha en círculos y mirá el estante.",
-                        "Un juego con 100 aperturas gana borde de coleccionista.",
-                        "Después de un minuto quieto, el estante se pasea solo.",
-                        "En la pantalla de bloqueo, arriba y abajo cambian el brillo.",
-                        "HOME dentro de un juego muestra cuánto llevás jugando.",
-                    };
-                    const auto count = sizeof(Tips) / sizeof(Tips[0]);
+                    const auto count = 12;
                     this->shelf_press = 1.0;
                     this->Haptic(0.35f, 200.0f, 0.03);
-                    g_MenuApplication->ShowNotification(Tips[armGetSystemTick() % count], 3200);
+                    g_MenuApplication->ShowNotification(nxt::T("tip_" + std::to_string(armGetSystemTick() % count)), 3200);
                 }
                 return;
             }
@@ -1607,7 +1600,7 @@ namespace ul::menu::ui {
         this->ShelfRenderInfo(drawer, x, y);
         if(nv == 0) {
             if(this->shelf_empty_text == nullptr) {
-                this->shelf_empty_text = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), "No hay nada en esta categoría todavía", { 0xFF, 0xFF, 0xFF, 0xB0 });
+                this->shelf_empty_text = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), nxt::T("empty_shelf"), { 0xFF, 0xFF, 0xFF, 0xB0 });
             }
             const auto tw = pu::ui::render::GetTextureWidth(this->shelf_empty_text);
             const auto th = pu::ui::render::GetTextureHeight(this->shelf_empty_text);
@@ -1948,31 +1941,54 @@ namespace ul::menu::ui {
 
         std::string ShelfSpecialName(const Entry &entry) {
             switch(entry.type) {
-                case EntryType::SpecialEntryMiiEdit: return "Editor de Mii";
-                case EntryType::SpecialEntryWebBrowser: return "Navegador";
-                case EntryType::SpecialEntryUserPage: return "Perfil";
-                case EntryType::SpecialEntrySettings: return "Configuración";
-                case EntryType::SpecialEntryThemes: return "Temas";
-                case EntryType::SpecialEntryControllers: return "Controles";
-                case EntryType::SpecialEntryAlbum: return "Álbum";
+                case EntryType::SpecialEntryMiiEdit: return nxt::T("sp_mii");
+                case EntryType::SpecialEntryWebBrowser: return nxt::T("sp_web");
+                case EntryType::SpecialEntryUserPage: return nxt::T("sp_user");
+                case EntryType::SpecialEntrySettings: return nxt::T("sp_settings");
+                case EntryType::SpecialEntryThemes: return nxt::T("sp_themes");
+                case EntryType::SpecialEntryControllers: return nxt::T("sp_controllers");
+                case EntryType::SpecialEntryAlbum: return nxt::T("sp_album");
                 case EntryType::SpecialEntryAmiibo: return "amiibo";
                 default: return "";
             }
         }
 
+        inline pu::sdl2::Texture Text(const pu::ui::DefaultFontSize size, const std::string &text) {
+            return pu::ui::render::RenderText(pu::ui::GetDefaultFont(size), text, { 0xFF, 0xFF, 0xFF, 0xFF });
+        }
+
+        inline void Free(pu::sdl2::Texture &tex) {
+            pu::ui::render::DeleteTexture(tex);
+            tex = nullptr;
+        }
+
+        inline void Draw(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture tex, const s32 x, const s32 y, const double alpha) {
+            if(tex != nullptr) {
+                drawer->RenderTexture(tex, x, y, pu::ui::render::TextureRenderOptions((u8)std::clamp(alpha, 0.0, 255.0), {}, {}, {}, {}, {}));
+            }
+        }
+
+        inline s32 TexW(pu::sdl2::Texture tex) {
+            return (tex != nullptr) ? pu::ui::render::GetTextureWidth(tex) : 0;
+        }
+
+        inline s32 TexH(pu::sdl2::Texture tex) {
+            return (tex != nullptr) ? pu::ui::render::GetTextureHeight(tex) : 0;
+        }
+
         void ShelfDescribe(Entry &entry, std::string &out_title, std::string &out_meta) {
             if(entry.IsSpecial()) {
                 out_title = ShelfSpecialName(entry);
-                out_meta = "Sistema";
+                out_meta = nxt::T("meta_system");
                 return;
             }
             if(entry.Is<EntryType::Folder>()) {
                 out_title = entry.folder_info.name;
-                out_meta = "Categoría";
+                out_meta = nxt::T("meta_category");
                 return;
             }
             entry.TryLoadNacp();
-            out_title = entry.control.name.empty() ? "Sin título" : entry.control.name;
+            out_title = entry.control.name.empty() ? nxt::T("untitled") : entry.control.name;
             std::string meta;
             if(entry.Is<EntryType::Homebrew>()) {
                 meta = "Homebrew";
@@ -1981,13 +1997,13 @@ namespace ul::menu::ui {
                 meta += (meta.empty() ? "" : "   ·   ") + entry.control.author;
             }
             if(!entry.control.version.empty()) {
-                meta += (meta.empty() ? "" : "   ·   ") + std::string("Versión ") + entry.control.version;
+                meta += (meta.empty() ? "" : "   ·   ") + nxt::Sub(nxt::T("version"), "v", entry.control.version);
             }
             if(entry.Is<EntryType::Application>() && entry.app_info.IsGameCardInserted()) {
-                meta += "   ·   Cartucho";
+                meta += "   ·   " + nxt::T("cartridge");
             }
             if(g_GlobalSettings.IsSuspended() && g_GlobalSettings.IsEntrySuspended(entry)) {
-                meta += "   ·   En pausa";
+                meta += "   ·   " + nxt::T("paused");
             }
             out_meta = meta;
         }
@@ -2135,6 +2151,12 @@ namespace ul::menu::ui {
         this->sheet_badge = nullptr;
         pu::ui::render::DeleteTexture(this->sheet_time);
         this->sheet_time = nullptr;
+        Free(this->sheet_cont_tex);
+        Free(this->sheet_other_label);
+        Free(this->sheet_icon_label);
+        this->sheet_icon_label_str.clear();
+        this->sheet_hint_str.clear();
+        this->sheet_other_icons.clear();
         this->sheet_hint = nullptr;
     }
 
@@ -2147,36 +2169,102 @@ namespace ul::menu::ui {
         this->FocusSuspendedEntry();
 
         if(title.empty()) {
-            title = "Juego en pausa";
+            title = nxt::T("paused_game");
         }
-        // The "En pausa" tag is already the badge here
-        const std::string paused_tag = "   ·   En pausa";
+        // The "Paused" tag is already the badge here
+        const std::string paused_tag = "   ·   " + nxt::T("paused");
         if((meta.length() >= paused_tag.length()) && (meta.compare(meta.length() - paused_tag.length(), paused_tag.length(), paused_tag) == 0)) {
             meta.erase(meta.length() - paused_tag.length());
         }
 
-        const auto white = pu::ui::Color{ 0xFF, 0xFF, 0xFF, 0xFF };
-        this->sheet_title = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Large), title, white);
+        this->sheet_title = Text(pu::ui::DefaultFontSize::Large, title);
         if(!meta.empty()) {
-            this->sheet_meta = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), meta, white);
+            this->sheet_meta = Text(pu::ui::DefaultFontSize::Small, meta);
         }
-        this->sheet_badge = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), "EN PAUSA", white);
-        if(const auto played = session::GetSeconds(); played >= 0) {
-            this->sheet_time = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), session::Format(played), white);
-        }
-        this->sheet_hint = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Small), "A  Elegir        B  Biblioteca        HOME  Volver al juego", white);
+        this->sheet_badge = Text(pu::ui::DefaultFontSize::Small, nxt::T("paused_badge"));
 
-        this->sheet_actions = { static_cast<u32>(SheetAction::Resume), static_cast<u32>(SheetAction::Close), static_cast<u32>(SheetAction::Album), static_cast<u32>(SheetAction::Library) };
-        const std::vector<std::string> labels = { "Continuar jugando", "Cerrar juego", "Álbum", "Ir a la biblioteca" };
-        for(const auto &label : labels) {
-            this->sheet_opt_texts.push_back(pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), label, white));
+        // One quiet line about this game: today, this week, streak
+        {
+            const auto app_id = g_GlobalSettings.system_status.suspended_app_id;
+            const auto stats = session::GetAppStats(app_id);
+            u64 week = 0;
+            for(const auto secs : stats.week) {
+                week += secs;
+            }
+            std::string line = nxt::Sub(nxt::T("stat_today"), "t", nxt::Played(stats.week[6]));
+            if(week > stats.week[6]) {
+                line += "   ·   " + nxt::Sub(nxt::T("stat_week"), "t", nxt::Played(week));
+            }
+            if(stats.streak >= 2) {
+                line += "   ·   " + nxt::Sub(nxt::T("stat_streak"), "n", std::to_string(stats.streak));
+            }
+            this->sheet_time = Text(pu::ui::DefaultFontSize::Small, line);
         }
 
-        this->sheet_sel = 0;
+        this->sheet_cont_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("continue"));
+        this->sheet_other_label = Text(pu::ui::DefaultFontSize::Small, nxt::T("other"));
+        if(!this->sheet_icons_loaded) {
+            this->sheet_icons_loaded = true;
+            static const char *const Names[5] = { "Play", "Album", "Library", "Headphones", "Power" };
+            for(u32 i = 0; i < 5; i++) {
+                this->sheet_icons[i] = TryFindLoadImage(std::string("ui/Main/NxDash/") + Names[i]);
+            }
+        }
+
+        // Play something else: the last games, minus the one that is paused
+        this->sheet_other_ids.clear();
+        this->sheet_other_icons.clear();
+        this->sheet_other_names.clear();
+        for(const auto app_id : session::Recents()) {
+            if((app_id == 0) || (app_id == g_GlobalSettings.system_status.suspended_app_id)) {
+                continue;
+            }
+            Entry probe = {};
+            probe.type = EntryType::Application;
+            probe.app_info.app_id = app_id;
+            probe.app_info.record.id = app_id;
+            std::string name;
+            std::string unused;
+            ShelfDescribe(probe, name, unused);
+            this->sheet_other_ids.push_back(app_id);
+            this->sheet_other_icons.push_back(LoadApplicationIconTexture(app_id));
+            this->sheet_other_names.push_back(name);
+            if(this->sheet_other_ids.size() >= 3) {
+                break;
+            }
+        }
+
+        this->sheet_bt_poll = 1.0;
+        this->SheetRefreshBluetooth();
+
+        this->sheet_zone = 0;
+        this->sheet_icon_sel = 0;
+        this->sheet_other_sel = 0;
+        this->sheet_lens_init = false;
+        this->sheet_hint_str.clear();
+        this->sheet_play_other = 0;
         this->sheet_intro_dim = true;
-        this->sheet_sel_y = -1.0;
         this->sheet_anim = 0.0;
         this->sheet_open = true;
+    }
+
+    void EntryMenu::SheetRefreshBluetooth() {
+        this->sheet_bt_poll += this->fx_dt;
+        if(this->sheet_bt_poll < 1.0) {
+            return;
+        }
+        this->sheet_bt_poll = 0.0;
+        const auto dev = bt::GetConnectedAudioDevice();
+        this->sheet_bt_connected = dev.name[0] != '\0';
+        if(this->sheet_bt_connected) {
+            this->sheet_bt_name = std::string(dev.name, strnlen(dev.name, sizeof(dev.name)));
+            this->sheet_bt_paired = true;
+        }
+        else {
+            const auto paired = bt::ListPairedAudioDevices();
+            this->sheet_bt_paired = !paired.empty();
+            this->sheet_bt_name = paired.empty() ? nxt::T("headphones") : std::string(paired.front().name, strnlen(paired.front().name, sizeof(paired.front().name)));
+        }
     }
 
     void EntryMenu::SheetExecute(const u32 action) {
@@ -2209,6 +2297,44 @@ namespace ul::menu::ui {
                 this->sheet_open = false;
                 break;
             }
+            case SheetAction::PlayOther: {
+                if(this->sheet_action_cb) {
+                    this->sheet_action_cb(act);
+                }
+                break;
+            }
+        }
+    }
+
+    void EntryMenu::SheetActivate() {
+        this->NxSfx(2);
+        if(this->sheet_zone == 0) {
+            this->SheetExecute(static_cast<u32>(SheetAction::Resume));
+        }
+        else if(this->sheet_zone == 1) {
+            switch(this->sheet_icon_sel) {
+                case 0: {
+                    this->SheetExecute(static_cast<u32>(SheetAction::Album));
+                    break;
+                }
+                case 1: {
+                    this->SheetExecute(static_cast<u32>(SheetAction::Library));
+                    break;
+                }
+                case 2: {
+                    this->LockBluetooth();
+                    this->sheet_bt_poll = 0.4;
+                    break;
+                }
+                default: {
+                    this->SheetExecute(static_cast<u32>(SheetAction::Close));
+                    break;
+                }
+            }
+        }
+        else if((this->sheet_zone == 2) && (this->sheet_other_sel < (s32)this->sheet_other_ids.size())) {
+            this->sheet_play_other = this->sheet_other_ids.at(this->sheet_other_sel);
+            this->SheetExecute(static_cast<u32>(SheetAction::PlayOther));
         }
     }
 
@@ -2223,9 +2349,19 @@ namespace ul::menu::ui {
             this->sheet_touching = false;
             for(const auto &hit : this->sheet_hits) {
                 if((this->sheet_touch_x >= hit.x) && (this->sheet_touch_x < hit.x + hit.w) && (this->sheet_touch_y >= hit.y) && (this->sheet_touch_y < hit.y + hit.h)) {
-                    if(hit.pos >= 0) {
-                        this->sheet_sel = hit.pos;
-                        this->SheetExecute(this->sheet_actions.at(hit.pos));
+                    if(hit.pos == 0) {
+                        this->sheet_zone = 0;
+                        this->SheetActivate();
+                    }
+                    else if((hit.pos >= 10) && (hit.pos < 20)) {
+                        this->sheet_zone = 1;
+                        this->sheet_icon_sel = hit.pos - 10;
+                        this->SheetActivate();
+                    }
+                    else if(hit.pos >= 20) {
+                        this->sheet_zone = 2;
+                        this->sheet_other_sel = hit.pos - 20;
+                        this->SheetActivate();
                     }
                     return;
                 }
@@ -2235,20 +2371,47 @@ namespace ul::menu::ui {
             return;
         }
 
-        const auto n = (s32)this->sheet_actions.size();
+        const auto zones = this->sheet_other_ids.empty() ? 2 : 3;
+        const auto prev = this->sheet_zone * 100 + this->sheet_icon_sel * 10 + this->sheet_other_sel;
         if(keys_down & HidNpadButton_AnyUp) {
-            this->sheet_sel = (this->sheet_sel + n - 1) % n;
-            this->cur_entry_change_started_cb();
+            this->sheet_zone = std::max(0, this->sheet_zone - 1);
         }
         else if(keys_down & HidNpadButton_AnyDown) {
-            this->sheet_sel = (this->sheet_sel + 1) % n;
-            this->cur_entry_change_started_cb();
+            this->sheet_zone = std::min(zones - 1, this->sheet_zone + 1);
+        }
+        else if(keys_down & HidNpadButton_AnyLeft) {
+            if(this->sheet_zone == 1) {
+                this->sheet_icon_sel = std::max(0, this->sheet_icon_sel - 1);
+            }
+            else if(this->sheet_zone == 2) {
+                this->sheet_other_sel = std::max(0, this->sheet_other_sel - 1);
+            }
+        }
+        else if(keys_down & HidNpadButton_AnyRight) {
+            if(this->sheet_zone == 1) {
+                this->sheet_icon_sel = std::min(3, this->sheet_icon_sel + 1);
+            }
+            else if(this->sheet_zone == 2) {
+                this->sheet_other_sel = std::min((s32)this->sheet_other_ids.size() - 1, this->sheet_other_sel + 1);
+            }
         }
         else if(keys_down & HidNpadButton_A) {
-            this->SheetExecute(this->sheet_actions.at(this->sheet_sel));
+            this->SheetActivate();
+            return;
         }
         else if(keys_down & HidNpadButton_B) {
             this->SheetExecute(static_cast<u32>(SheetAction::Library));
+            return;
+        }
+        const auto now = this->sheet_zone * 100 + this->sheet_icon_sel * 10 + this->sheet_other_sel;
+        if(now != prev) {
+            this->NxSfx(0);
+            this->Haptic(0.18f, 160.0f, 0.015);
+        }
+        else if(keys_down & (HidNpadButton_AnyUp | HidNpadButton_AnyDown | HidNpadButton_AnyLeft | HidNpadButton_AnyRight)) {
+            // Edge of the panel: a soft bump
+            this->NxSfx(1);
+            this->Haptic(0.3f, 120.0f, 0.03);
         }
     }
 
@@ -2273,7 +2436,7 @@ namespace ul::menu::ui {
         }
 
         const auto target = this->sheet_open ? 1.0 : 0.0;
-        this->sheet_anim = this->FxApproach(this->sheet_anim, target, this->sheet_open ? 0.20 : 0.26);
+        this->sheet_anim = this->FxApproach(this->sheet_anim, target, this->sheet_open ? 0.18 : 0.26);
         if(std::abs(target - this->sheet_anim) < 0.003) {
             this->sheet_anim = target;
         }
@@ -2284,87 +2447,251 @@ namespace ul::menu::ui {
             this->sheet_hits.clear();
             return;
         }
+        EnsureShapes();
+        if(this->sheet_open) {
+            this->SheetRefreshBluetooth();
+        }
 
         const auto a = SmoothStep(this->sheet_anim);
         const auto alpha = [&](const double v) {
             return (u8)std::clamp(v * a, 0.0, 255.0);
         };
+        // Panel contents arrive a beat after the glass
+        const auto ca = [&](const double v) {
+            return (u8)std::clamp(v * a * std::clamp(this->sheet_anim * 1.7 - 0.5, 0.0, 1.0), 0.0, 255.0);
+        };
         const s32 sw = pu::ui::render::ScreenWidth;
         const s32 sh = pu::ui::render::ScreenHeight;
 
-        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, alpha(200.0) }, 0, 0, sw, sh);
+        // The library stays behind, dimmed: you paused, you didn't leave
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, alpha(196.0) }, 0, 0, sw, sh);
 
-        // Glass panel
-        const auto pop = 0.95 + 0.05 * a;
-        const s32 pw = (s32)(1640.0 * pop);
-        const s32 ph = (s32)(780.0 * pop);
-        const s32 px = (sw - pw) / 2;
-        const s32 py = (sh - ph) / 2;
-        RenderGlass(drawer, px, py, pw, ph, 36, a, 205);
+        const s32 pw = 640;
+        const s32 px_final = sw - pw - 28;
+        const s32 px = px_final + (s32)((1.0 - a) * (pw + 80));
+        const s32 py = 28;
+        const s32 ph = sh - 56;
+        const s32 pad = 48;
+        const s32 ix = px + pad;
+        const s32 iw = pw - pad * 2;
 
-        // Game capture: zooms from full screen into the thumbnail
-        const double tw = 960.0;
-        const double th = 540.0;
-        const double tx = px + 60.0;
-        const double ty = py + 60.0;
-        const auto rx = tx * a;
-        const auto ry = ty * a;
-        const auto rw = sw + (tw - sw) * a;
-        const auto rh = sh + (th - sh) * a;
-        FillRR(drawer, { 0xFF, 0xFF, 0xFF, alpha(90.0) }, (s32)rx - 2, (s32)ry - 2, (s32)rw + 4, (s32)rh + 4, 10);
-        auto capture = GetScreenCaptureBackground()->GetTexture();
-        if(capture != nullptr) {
-            drawer->RenderTexture(capture, (s32)rx, (s32)ry, pu::ui::render::TextureRenderOptions(0xFF, (s32)rw, (s32)rh, {}, {}, {}));
+        // Game capture: zooms from full screen into the space the panel leaves
+        {
+            const double tw = 1040.0;
+            const double th = 585.0;
+            const double tx = ((double)px_final - tw) / 2.0;
+            const double ty = ((double)sh - th) / 2.0;
+            const auto rx = tx * a;
+            const auto ry = ty * a;
+            const auto rw = sw + (tw - sw) * a;
+            const auto rh = sh + (th - sh) * a;
+            if(g_Glow != nullptr) {
+                drawer->RenderTexture(g_Glow, (s32)(rx - 60.0), (s32)(ry - 40.0), pu::ui::render::TextureRenderOptions(alpha(90.0), (s32)(rw + 120.0), (s32)(rh + 120.0), {}, {}, {}));
+            }
+            auto capture = GetScreenCaptureBackground()->GetTexture();
+            if(capture != nullptr) {
+                drawer->RenderTexture(capture, (s32)rx, (s32)ry, pu::ui::render::TextureRenderOptions(0xFF, (s32)rw, (s32)rh, {}, {}, {}));
+            }
+            else {
+                drawer->RenderRectangleFill({ 0x1C, 0x1E, 0x28, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
+            }
+            if(this->sheet_intro_dim && this->sheet_open) {
+                drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, (u8)(110.0 * (1.0 - a)) }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
+            }
+            else {
+                this->sheet_intro_dim = false;
+            }
         }
-        else {
-            drawer->RenderRectangleFill({ 0x1C, 0x1E, 0x28, 0xFF }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
-        }
-        if(this->sheet_intro_dim && this->sheet_open) {
-            // The first thing shown after HOME is the game image dimmed; it brightens as it settles into the panel
-            drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, (u8)(110.0 * (1.0 - a)) }, (s32)rx, (s32)ry, (s32)rw, (s32)rh);
-        }
-        else {
-            this->sheet_intro_dim = false;
-        }
-        RenderTextFit(drawer, this->sheet_hint, tx, (s32)(ty + th + 44.0), tw, alpha(150.0), false);
 
-        // Right column: badge, title, details, options
-        const double cx0 = tx + tw + 64.0;
-        const double colw = (px + pw - 60.0) - cx0;
-        if(this->sheet_badge != nullptr) {
-            const auto bw = pu::ui::render::GetTextureWidth(this->sheet_badge);
-            const auto bh = pu::ui::render::GetTextureHeight(this->sheet_badge);
-            FillRR(drawer, { ShelfCaseColor.r, ShelfCaseColor.g, ShelfCaseColor.b, alpha(255.0) }, (s32)cx0, (s32)ty, bw + 28, bh + 12, (bh + 12) / 2);
-            drawer->RenderTexture(this->sheet_badge, (s32)cx0 + 14, (s32)ty + 6, pu::ui::render::TextureRenderOptions(alpha(255.0), {}, {}, {}, {}, {}));
-            RenderTextFit(drawer, this->sheet_time, cx0 + bw + 28.0 + 18.0, (s32)ty + 6, colw - (bw + 46.0), alpha(190.0), false);
-        }
-        RenderTextFit(drawer, this->sheet_title, cx0, (s32)(ty + 62.0), colw, alpha(255.0), false);
-        RenderTextFit(drawer, this->sheet_meta, cx0, (s32)(ty + 128.0), colw, alpha(165.0), false);
+        // One sheet of glass, full height
+        FillRR(drawer, { 0x10, 0x12, 0x1A, alpha(215.0) }, px, py, pw, ph, 40);
+        RenderGlass(drawer, px, py, pw, ph, 40, a, 90);
 
         this->sheet_hits.clear();
-        this->sheet_hits.push_back({ -1, px, py, pw, ph });
-        const s32 row_h = 76;
-        const s32 row_gap = 12;
-        s32 oy = (s32)(ty + 210.0);
+        s32 y = py + 52;
         {
-            // The selection glides between rows
-            const auto sel_y = (double)(oy + this->sheet_sel * (row_h + row_gap));
-            if(this->sheet_sel_y < 0.0) {
-                this->sheet_sel_y = sel_y;
+            const auto bw = TexW(this->sheet_badge);
+            const auto bh = TexH(this->sheet_badge);
+            FillRR(drawer, { 0xE8, 0x41, 0x32, ca(235.0) }, ix, y, bw + 28, bh + 10, (bh + 10) / 2);
+            Draw(drawer, this->sheet_badge, ix + 14, y + 5, ca(255.0));
+            y += bh + 26;
+        }
+        RenderTextFit(drawer, this->sheet_title, (double)ix, y, (double)iw, ca(255.0), false);
+        y += std::max(56, TexH(this->sheet_title) + 6);
+        if(this->sheet_meta != nullptr) {
+            RenderTextFit(drawer, this->sheet_meta, (double)ix, y, (double)iw, ca(150.0), false);
+            y += TexH(this->sheet_meta) + 18;
+        }
+        RenderTextFit(drawer, this->sheet_time, (double)ix, y, (double)iw, ca(185.0), false);
+        y += TexH(this->sheet_time) + 44;
+
+        // Focus targets first: the lens slides between them
+        const s32 cont_y = y;
+        const s32 cont_h = 78;
+        y += 108;
+        const s32 isz = 92;
+        const s32 igap = (iw - isz * 4) / 3;
+        const s32 icon_cy = y + isz / 2;
+        y += 160;
+        const s32 other_label_y = y;
+        const s32 card = 150;
+        const s32 card_gap = 22;
+        const s32 cards_y = y + 44;
+
+        double tx;
+        double ty;
+        double tw;
+        double th;
+        if(this->sheet_zone == 0) {
+            tx = ix - 12;
+            ty = cont_y;
+            tw = iw + 24;
+            th = cont_h;
+        }
+        else if(this->sheet_zone == 1) {
+            tx = ix + this->sheet_icon_sel * (isz + igap);
+            ty = icon_cy - isz / 2 - 6;
+            tw = isz;
+            th = isz;
+        }
+        else {
+            tx = ix + this->sheet_other_sel * (card + card_gap);
+            ty = cards_y;
+            tw = card;
+            th = card;
+        }
+        if(!this->sheet_lens_init) {
+            this->sheet_lens_init = true;
+            this->sheet_lx = tx;
+            this->sheet_ly = ty;
+            this->sheet_lw = tw;
+            this->sheet_lh = th;
+        }
+        this->sheet_lx = this->FxApproach(this->sheet_lx, tx, 0.30);
+        this->sheet_ly = this->FxApproach(this->sheet_ly, ty, 0.30);
+        this->sheet_lw = this->FxApproach(this->sheet_lw, tw, 0.30);
+        this->sheet_lh = this->FxApproach(this->sheet_lh, th, 0.30);
+        if(this->sheet_zone != 2) {
+            const auto r = (s32)std::min(this->sheet_lh / 2.0, (this->sheet_zone == 1) ? 46.0 : 34.0);
+            if((this->sheet_zone == 1) && (g_Glow != nullptr)) {
+                drawer->RenderTexture(g_Glow, (s32)this->sheet_lx - 40, (s32)this->sheet_ly - 40, pu::ui::render::TextureRenderOptions(ca(110.0), (s32)this->sheet_lw + 80, (s32)this->sheet_lh + 80, {}, {}, {}));
             }
-            this->sheet_sel_y = this->FxApproach(this->sheet_sel_y, sel_y, 0.30);
-            FillRR(drawer, { 0xFF, 0xFF, 0xFF, alpha(46.0) }, (s32)cx0, (s32)this->sheet_sel_y, (s32)colw, row_h, 18);
+            RenderGlass(drawer, (s32)this->sheet_lx, (s32)this->sheet_ly, (s32)this->sheet_lw, (s32)this->sheet_lh, r, a, (this->sheet_zone == 1) ? 160 : 100);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(24.0) }, (s32)this->sheet_lx, (s32)this->sheet_ly, (s32)this->sheet_lw, (s32)(this->sheet_lh / 2.0), r);
         }
-        for(u32 i = 0; i < this->sheet_opt_texts.size(); i++) {
-            const auto sel = (s32)i == this->sheet_sel;
-            // Rows arrive one after another
-            const auto row_p = SmoothStep(std::clamp(this->sheet_anim * 1.7 - 0.25 - (double)i * 0.11, 0.0, 1.0));
-            auto tex = this->sheet_opt_texts.at(i);
-            const auto tth = pu::ui::render::GetTextureHeight(tex);
-            drawer->RenderTexture(tex, (s32)cx0 + 28 + (s32)((1.0 - row_p) * 22.0), oy + (row_h - tth) / 2, pu::ui::render::TextureRenderOptions((u8)((sel ? 255.0 : 150.0) * row_p * (this->sheet_open ? 1.0 : a)), {}, {}, {}, {}, {}));
-            this->sheet_hits.insert(this->sheet_hits.begin(), { (s32)i, (s32)cx0, oy, (s32)colw, row_h });
-            oy += row_h + row_gap;
+
+        // Continue: the only action spelled out
+        {
+            const auto f = this->sheet_zone == 0;
+            const auto ta = f ? 255.0 : 150.0;
+            if(this->sheet_icons[0] != nullptr) {
+                drawer->RenderTexture(this->sheet_icons[0], ix + 8, cont_y + cont_h / 2 - 18, pu::ui::render::TextureRenderOptions(ca(ta), 36, 36, {}, {}, {}));
+            }
+            Draw(drawer, this->sheet_cont_tex, ix + 64, cont_y + (cont_h - TexH(this->sheet_cont_tex)) / 2, ca(ta));
+            this->sheet_hits.push_back({ 0, ix - 12, cont_y, iw + 24, cont_h });
         }
+
+        // Icons: the name shows only under the focused one
+        for(s32 i = 0; i < 4; i++) {
+            const auto f = (this->sheet_zone == 1) && (this->sheet_icon_sel == i);
+            const auto cx = ix + i * (isz + igap) + isz / 2;
+            const auto cy = icon_cy - (f ? 6 : 0);
+            if(!f) {
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(16.0) }, cx - isz / 2, icon_cy - isz / 2, isz, isz, isz / 2);
+            }
+            auto icon = this->sheet_icons[1 + i];
+            const auto danger = (i == 3) && f;
+            if(icon != nullptr) {
+                const auto isize = f ? 52 : 46;
+                if(danger) {
+                    SDL_SetTextureColorMod(icon, 0xFF, 0x6B, 0x5E);
+                }
+                drawer->RenderTexture(icon, cx - isize / 2, cy - isize / 2, pu::ui::render::TextureRenderOptions(ca(f ? 255.0 : 130.0), isize, isize, {}, {}, {}));
+                if(danger) {
+                    SDL_SetTextureColorMod(icon, 0xFF, 0xFF, 0xFF);
+                }
+            }
+            if((i == 2) && this->sheet_bt_connected) {
+                FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(255.0) }, cx + 24, cy - 32, 14, 14, 7);
+            }
+            if(f) {
+                std::string label;
+                switch(i) {
+                    case 0: label = nxt::T("album"); break;
+                    case 1: label = nxt::T("library"); break;
+                    case 2: label = this->sheet_bt_name; break;
+                    default: label = nxt::T("close"); break;
+                }
+                if(label != this->sheet_icon_label_str) {
+                    this->sheet_icon_label_str = label;
+                    Free(this->sheet_icon_label);
+                    this->sheet_icon_label = Text(pu::ui::DefaultFontSize::Small, label);
+                }
+                if(this->sheet_icon_label != nullptr) {
+                    const auto lw = std::min(TexW(this->sheet_icon_label), iw);
+                    const auto lx = std::clamp(cx - lw / 2, ix, ix + iw - lw);
+                    if(danger) {
+                        SDL_SetTextureColorMod(this->sheet_icon_label, 0xFF, 0x6B, 0x5E);
+                    }
+                    RenderTextFit(drawer, this->sheet_icon_label, (double)lx, icon_cy + isz / 2 + 14, (double)iw, ca(240.0), false);
+                    if(danger) {
+                        SDL_SetTextureColorMod(this->sheet_icon_label, 0xFF, 0xFF, 0xFF);
+                    }
+                }
+            }
+            this->sheet_hits.push_back({ 10 + i, cx - isz / 2, icon_cy - isz / 2, isz, isz });
+        }
+
+        // Play something else
+        if(!this->sheet_other_ids.empty()) {
+            Draw(drawer, this->sheet_other_label, ix, other_label_y, ca(150.0));
+            for(s32 i = 0; i < (s32)this->sheet_other_ids.size(); i++) {
+                const auto f = (this->sheet_zone == 2) && (this->sheet_other_sel == i);
+                const auto grow = f ? 8 : 0;
+                const auto x = ix + i * (card + card_gap) - grow / 2;
+                const auto yy = cards_y - grow / 2 - (f ? 4 : 0);
+                const auto s = card + grow;
+                if(f) {
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(235.0) }, x - 5, yy - 5, s + 10, s + 10, 24);
+                }
+                auto icon = this->sheet_other_icons.at(i);
+                if((icon != nullptr) && (icon->Get() != nullptr)) {
+                    drawer->RenderTexture(icon->Get(), x, yy, pu::ui::render::TextureRenderOptions(ca(f ? 255.0 : 150.0), s, s, {}, {}, {}));
+                }
+                else {
+                    FillRR(drawer, { 0x2A, 0x2D, 0x38, ca(255.0) }, x, yy, s, s, 18);
+                }
+                this->sheet_hits.push_back({ 20 + i, ix + i * (card + card_gap), cards_y, card, card });
+            }
+        }
+
+        // One contextual hint
+        {
+            std::string hint;
+            if(this->sheet_zone == 0) {
+                hint = nxt::T("h_continue");
+            }
+            else if(this->sheet_zone == 1) {
+                switch(this->sheet_icon_sel) {
+                    case 0: hint = nxt::T("h_album"); break;
+                    case 1: hint = nxt::T("h_library"); break;
+                    case 2: hint = !this->sheet_bt_paired ? nxt::T("h_bt_none") : nxt::Sub(nxt::T(this->sheet_bt_connected ? "h_bt_on" : "h_bt_off"), "name", this->sheet_bt_name); break;
+                    default: hint = nxt::T("h_close"); break;
+                }
+            }
+            else if(this->sheet_other_sel < (s32)this->sheet_other_names.size()) {
+                hint = nxt::Sub(nxt::T("h_other"), "name", this->sheet_other_names.at(this->sheet_other_sel));
+            }
+            if(hint != this->sheet_hint_str) {
+                this->sheet_hint_str = hint;
+                Free(this->sheet_hint);
+                this->sheet_hint = Text(pu::ui::DefaultFontSize::Small, hint);
+            }
+            RenderTextFit(drawer, this->sheet_hint, (double)ix, py + ph - 62, (double)iw, ca(125.0), false);
+        }
+
+        // Anywhere on the panel or the capture counts as "inside"
+        this->sheet_hits.push_back({ -1, 0, 0, px_final + pw, sh });
     }
 
     // ---- Ambient light: the focused cover, blurred down to a wash of color behind the glass ----
@@ -2502,42 +2829,12 @@ namespace ul::menu::ui {
 
     namespace {
 
-        inline pu::sdl2::Texture Text(const pu::ui::DefaultFontSize size, const std::string &text) {
-            return pu::ui::render::RenderText(pu::ui::GetDefaultFont(size), text, { 0xFF, 0xFF, 0xFF, 0xFF });
-        }
-
-        inline void Free(pu::sdl2::Texture &tex) {
-            pu::ui::render::DeleteTexture(tex);
-            tex = nullptr;
-        }
-
-        inline void Draw(pu::ui::render::Renderer::Ref &drawer, pu::sdl2::Texture tex, const s32 x, const s32 y, const double alpha) {
-            if(tex != nullptr) {
-                drawer->RenderTexture(tex, x, y, pu::ui::render::TextureRenderOptions((u8)std::clamp(alpha, 0.0, 255.0), {}, {}, {}, {}, {}));
-            }
-        }
-
-        inline s32 TexW(pu::sdl2::Texture tex) {
-            return (tex != nullptr) ? pu::ui::render::GetTextureWidth(tex) : 0;
-        }
-
-        inline s32 TexH(pu::sdl2::Texture tex) {
-            return (tex != nullptr) ? pu::ui::render::GetTextureHeight(tex) : 0;
-        }
-
         inline bool Hit(const s32 px, const s32 py, const s32 x, const s32 y, const s32 w, const s32 h) {
             return (px >= x) && (px < x + w) && (py >= y) && (py < y + h);
         }
 
         std::string FormatPlayed(const u64 seconds) {
-            const auto mins = seconds / 60;
-            if(mins < 1) {
-                return "menos de 1 min";
-            }
-            if(mins < 60) {
-                return std::to_string(mins) + " min";
-            }
-            return std::to_string(mins / 60) + " h " + std::to_string(mins % 60) + " min";
+            return nxt::Played(seconds);
         }
 
     }
@@ -2559,7 +2856,7 @@ namespace ul::menu::ui {
             probe.app_info.app_id = g_GlobalSettings.system_status.suspended_app_id;
             probe.app_info.record.id = probe.app_info.app_id;
             ShelfDescribe(probe, out_title, out_meta);
-            if(out_title == "Sin título") {
+            if(out_title == nxt::T("untitled")) {
                 out_title.clear();
             }
             return;
@@ -2594,6 +2891,26 @@ namespace ul::menu::ui {
                 if(this->IsInRoot() && !this->ShelfEntryMatches(entry)) {
                     // Not on the shelf being shown: switch to the one that has it
                     this->shelf_root_filter = entry.Is<EntryType::Homebrew>() ? ShelfFilter::Homebrew : ShelfFilter::Games;
+                    this->shelf_cats_sig.clear();
+                }
+                if(i != this->cur_entry_idx) {
+                    const auto prev_idx = (s32)this->cur_entry_idx;
+                    this->SetFocusedEntryIndex(i);
+                    this->NotifyFocusedEntryChanged(prev_idx);
+                }
+                this->shelf_synced = false;
+                return;
+            }
+        }
+    }
+
+    void EntryMenu::FocusAppEntry(const u64 app_id) {
+        this->DeferredLoadNow();
+        for(u32 i = 0; i < this->cur_entries.size(); i++) {
+            const auto &entry = this->cur_entries.at(i);
+            if(entry.Is<EntryType::Application>() && (entry.app_info.app_id == app_id)) {
+                if(this->IsInRoot() && !this->ShelfEntryMatches(entry)) {
+                    this->shelf_root_filter = ShelfFilter::Games;
                     this->shelf_cats_sig.clear();
                 }
                 if(i != this->cur_entry_idx) {
@@ -2872,14 +3189,15 @@ namespace ul::menu::ui {
         constexpr u32 LockClockFontSize = 150;
 
         std::string LockDateString() {
-            static const char *const Days[7] = { "domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado" };
-            static const char *const Months[12] = { "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre" };
             const auto now = ::time(nullptr);
             const auto lt = localtime(&now);
             if(lt == nullptr) {
                 return "";
             }
-            return std::string(Days[lt->tm_wday % 7]) + " " + std::to_string(lt->tm_mday) + " de " + Months[lt->tm_mon % 12];
+            auto text = nxt::T("date");
+            text = nxt::Sub(text, "day", nxt::T("day_" + std::to_string(lt->tm_wday % 7)));
+            text = nxt::Sub(text, "month", nxt::T("mon_" + std::to_string(lt->tm_mon % 12)));
+            return nxt::Sub(text, "d", std::to_string(lt->tm_mday));
         }
 
         std::string LockTimeString() {
@@ -2904,6 +3222,10 @@ namespace ul::menu::ui {
         Free(this->lock_hint_tex);
         Free(this->lock_bt_tex);
         Free(this->lock_bt_sub_tex);
+        for(auto &tex : this->lock_val_texs) {
+            Free(tex);
+        }
+        this->lock_bt_sub_str.clear();
         for(auto &tex : this->lock_ctl_texs) {
             Free(tex);
         }
@@ -2964,37 +3286,47 @@ namespace ul::menu::ui {
         }
 
         this->lock_date_tex = Text(pu::ui::DefaultFontSize::MediumLarge, LockDateString());
-        this->lock_hint_tex = Text(pu::ui::DefaultFontSize::Small, "Apretá 3 veces el mismo botón");
-        this->lock_ctl_texs[0] = Text(pu::ui::DefaultFontSize::Small, "Brillo");
-        this->lock_ctl_texs[1] = Text(pu::ui::DefaultFontSize::Small, "Volumen");
+        this->lock_ctl_texs[0] = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("brightness"));
+        this->lock_ctl_texs[1] = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("volume"));
+        {
+            static const char *const Names[7] = { "Play", "Album", "Library", "Headphones", "Sun", "Volume", "Power" };
+            for(u32 i = 0; i < 7; i++) {
+                if(this->sheet_icons_lock[i] == nullptr) {
+                    this->sheet_icons_lock[i] = TryFindLoadImage(std::string("ui/Main/NxDash/") + Names[i]);
+                }
+            }
+        }
 
         std::vector<std::string> labels;
         if(g_GlobalSettings.IsSuspended()) {
             std::string title;
             std::string meta;
             this->DescribeSuspended(title, meta);
-            this->lock_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, title.empty() ? "Juego en pausa" : title);
-            this->lock_badge_tex = Text(pu::ui::DefaultFontSize::Small, "EN PAUSA");
+            this->lock_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, title.empty() ? nxt::T("paused_game") : title);
+            this->lock_badge_tex = Text(pu::ui::DefaultFontSize::Small, nxt::T("paused_badge"));
             if(const auto played = session::GetSeconds(); played >= 0) {
-                this->lock_played_tex = Text(pu::ui::DefaultFontSize::Small, session::Format(played));
+                this->lock_played_tex = Text(pu::ui::DefaultFontSize::Small, nxt::Played((u64)played));
             }
             this->lock_opt_keys = { HidNpadButton_A, HidNpadButton_X, HidNpadButton_Y };
-            labels = { "Seguir jugando", "Biblioteca", "Álbum" };
+            labels = { nxt::T("continue"), nxt::T("library"), nxt::T("album") };
         }
         else {
             this->lock_opt_keys = { HidNpadButton_A, HidNpadButton_Y };
-            labels = { "Biblioteca", "Álbum" };
+            labels = { nxt::T("library"), nxt::T("album") };
         }
         for(u32 i = 0; i < labels.size(); i++) {
-            this->lock_opt_texs.push_back(Text(pu::ui::DefaultFontSize::Medium, labels.at(i)));
-            const auto key = this->lock_opt_keys.at(i);
-            this->lock_key_texs.push_back(pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::MediumLarge), (key == HidNpadButton_A) ? "A" : ((key == HidNpadButton_X) ? "X" : "Y"), { 0x12, 0x12, 0x16, 0xFF }));
+            this->lock_opt_texs.push_back(Text(pu::ui::DefaultFontSize::MediumLarge, labels.at(i)));
         }
 
         this->LockRefreshBluetooth(true);
         this->lock_btn = 0;
         this->lock_count = 0;
         this->lock_pop = 0.0;
+        this->lock_sel = 0;
+        this->lock_lens_init = false;
+        this->lock_hint_str.clear();
+        this->lock_val_str[0].clear();
+        this->lock_val_str[1].clear();
         this->lock_drag = -1;
         this->lock_touching = false;
         this->lock_out = -1.0;
@@ -3009,14 +3341,25 @@ namespace ul::menu::ui {
         }
         this->lock_bt_poll = 0.0;
         const auto dev = bt::GetConnectedAudioDevice();
-        const std::string name = (dev.name[0] != '\0') ? std::string(dev.name, strnlen(dev.name, sizeof(dev.name))) : "";
-        const auto label = name.empty() ? std::string("Bluetooth") : name;
-        if(force || (label != this->lock_bt_str) || (this->lock_bt_tex == nullptr)) {
-            this->lock_bt_str = label;
+        this->lock_bt_connected = dev.name[0] != '\0';
+        std::string name;
+        if(this->lock_bt_connected) {
+            name = std::string(dev.name, strnlen(dev.name, sizeof(dev.name)));
+            this->lock_bt_paired = true;
+        }
+        else {
+            const auto paired = bt::ListPairedAudioDevices();
+            this->lock_bt_paired = !paired.empty();
+            name = paired.empty() ? nxt::T("headphones") : std::string(paired.front().name, strnlen(paired.front().name, sizeof(paired.front().name)));
+        }
+        const auto sub = this->lock_bt_connected ? nxt::T("connected") : nxt::T("connect");
+        if(force || (name != this->lock_bt_str) || (sub != this->lock_bt_sub_str) || (this->lock_bt_tex == nullptr)) {
+            this->lock_bt_str = name;
+            this->lock_bt_sub_str = sub;
             Free(this->lock_bt_tex);
             Free(this->lock_bt_sub_tex);
-            this->lock_bt_tex = Text(pu::ui::DefaultFontSize::Medium, label);
-            this->lock_bt_sub_tex = Text(pu::ui::DefaultFontSize::Small, name.empty() ? "L para conectar" : "Conectado · L para desconectar");
+            this->lock_bt_tex = Text(pu::ui::DefaultFontSize::MediumLarge, name);
+            this->lock_bt_sub_tex = Text(pu::ui::DefaultFontSize::Medium, sub);
         }
     }
 
@@ -3024,21 +3367,22 @@ namespace ul::menu::ui {
         const auto dev = bt::GetConnectedAudioDevice();
         if(dev.name[0] != '\0') {
             bt::DisconnectAudioDevice(dev);
-            g_MenuApplication->ShowNotification("Desconectando el audio Bluetooth…", 1800);
+            g_MenuApplication->ShowNotification(nxt::Sub(nxt::T("bt_disconnecting"), "name", std::string(dev.name, strnlen(dev.name, sizeof(dev.name)))), 1800);
         }
         else {
             const auto paired = bt::ListPairedAudioDevices();
             if(paired.empty()) {
-                g_MenuApplication->ShowNotification("Primero emparejá un dispositivo en Configuración → Bluetooth", 3000);
+                g_MenuApplication->ShowNotification(nxt::T("bt_pair_first"), 3000);
             }
             else {
                 const auto &target = paired.front();
                 bt::ConnectAudioDevice(target);
-                g_MenuApplication->ShowNotification("Conectando a " + std::string(target.name, strnlen(target.name, sizeof(target.name))) + "…", 2200);
+                g_MenuApplication->ShowNotification(nxt::Sub(nxt::T("bt_connecting"), "name", std::string(target.name, strnlen(target.name, sizeof(target.name)))), 2200);
             }
         }
         this->Haptic(0.3f, 200.0f, 0.02);
         this->lock_bt_poll = 0.4;
+        this->sheet_bt_poll = 0.4;
     }
 
     void EntryMenu::LockSetBrightness(const float value) {
@@ -3089,7 +3433,7 @@ namespace ul::menu::ui {
                 this->lock_touching = true;
                 this->lock_drag = -1;
                 for(const auto &hit : this->lock_hits) {
-                    if((hit.pos >= 20) && Hit(touch_pos.x, touch_pos.y, hit.x - 30, hit.y - 30, hit.w + 60, hit.h + 60)) {
+                    if((hit.pos >= 20) && (hit.pos < 100) && Hit(touch_pos.x, touch_pos.y, hit.x - 30, hit.y - 30, hit.w + 60, hit.h + 60)) {
                         this->lock_drag = hit.pos;
                     }
                 }
@@ -3115,12 +3459,16 @@ namespace ul::menu::ui {
             this->lock_touching = false;
             if(this->lock_drag < 0) {
                 for(const auto &hit : this->lock_hits) {
-                    if(Hit(this->lock_tx, this->lock_ty, hit.x, hit.y, hit.w, hit.h)) {
-                        if(hit.pos < (s32)this->lock_opt_keys.size()) {
-                            this->LockPress(this->lock_opt_keys.at(hit.pos));
+                    if((hit.pos >= 100) && Hit(this->lock_tx, this->lock_ty, hit.x, hit.y, hit.w, hit.h)) {
+                        const auto row = hit.pos - 100;
+                        if(row != this->lock_sel) {
+                            this->lock_sel = row;
+                            this->lock_btn = 0;
+                            this->lock_count = 0;
+                            this->NxSfx(0);
                         }
-                        else if(hit.pos == 10) {
-                            this->LockBluetooth();
+                        else {
+                            this->LockActivate();
                         }
                         break;
                     }
@@ -3130,28 +3478,42 @@ namespace ul::menu::ui {
             return;
         }
 
-        if(keys_down & HidNpadButton_A) {
-            this->LockPress(HidNpadButton_A);
+        const auto n_act = (s32)this->lock_opt_keys.size();
+        const auto rows = n_act + 3;
+        if(keys_down & (HidNpadButton_AnyUp | HidNpadButton_AnyDown)) {
+            const auto next = std::clamp(this->lock_sel + ((keys_down & HidNpadButton_AnyUp) ? -1 : 1), 0, rows - 1);
+            if(next != this->lock_sel) {
+                this->lock_sel = next;
+                this->lock_btn = 0;
+                this->lock_count = 0;
+                this->NxSfx(0);
+                this->Haptic(0.18f, 160.0f, 0.015);
+            }
+            else {
+                this->NxSfx(1);
+                this->Haptic(0.3f, 120.0f, 0.03);
+            }
         }
-        else if(keys_down & HidNpadButton_X) {
-            this->LockPress(HidNpadButton_X);
+        else if(keys_down & (HidNpadButton_AnyLeft | HidNpadButton_AnyRight)) {
+            const auto dir = (keys_down & HidNpadButton_AnyRight) ? 1 : -1;
+            if(this->lock_sel == n_act + 1) {
+                this->LockSetBrightness(this->lock_bright + 0.05f * dir);
+            }
+            else if(this->lock_sel == n_act + 2) {
+                this->LockSetVolume(this->lock_vol + dir);
+            }
         }
-        else if(keys_down & HidNpadButton_Y) {
-            this->LockPress(HidNpadButton_Y);
+        else if(keys_down & HidNpadButton_A) {
+            this->LockActivate();
         }
-        else if(keys_down & HidNpadButton_AnyUp) {
-            this->LockSetBrightness(this->lock_bright + 0.1f);
+    }
+
+    void EntryMenu::LockActivate() {
+        const auto n_act = (s32)this->lock_opt_keys.size();
+        if(this->lock_sel < n_act) {
+            this->LockPress(this->lock_opt_keys.at(this->lock_sel));
         }
-        else if(keys_down & HidNpadButton_AnyDown) {
-            this->LockSetBrightness(this->lock_bright - 0.1f);
-        }
-        else if(keys_down & HidNpadButton_AnyRight) {
-            this->LockSetVolume(this->lock_vol + 1);
-        }
-        else if(keys_down & HidNpadButton_AnyLeft) {
-            this->LockSetVolume(this->lock_vol - 1);
-        }
-        else if(keys_down & HidNpadButton_L) {
+        else if(this->lock_sel == n_act) {
             this->LockBluetooth();
         }
     }
@@ -3195,7 +3557,9 @@ namespace ul::menu::ui {
             drawer->RenderTexture(g_FadeUp, 0, sh - 480, pu::ui::render::TextureRenderOptions((u8)al(200.0), sw, 480, {}, {}, {}));
         }
 
-        // Clock (re-rendered when the minute changes)
+        // Left column: time and what is paused. No boxes.
+        const s32 lx = 150;
+        Draw(drawer, this->lock_date_tex, lx + 6, 236 + lift, al(190.0));
         const auto time_str = LockTimeString();
         if((time_str != this->lock_time_str) || (this->lock_time_tex == nullptr)) {
             this->lock_time_str = time_str;
@@ -3209,109 +3573,159 @@ namespace ul::menu::ui {
             // If the big font was not available, the regular one is scaled up instead
             const auto th = TexH(this->lock_time_tex);
             const auto k = (th < 100) ? (170.0 / (double)std::max(1, th)) : 1.0;
-            const auto dw = TexW(this->lock_time_tex) * k;
-            const auto dh = th * k;
-            drawer->RenderTexture(this->lock_time_tex, (s32)(((double)sw - dw) / 2.0), 96 + lift, pu::ui::render::TextureRenderOptions((u8)al(255.0), (s32)dw, (s32)dh, {}, {}, {}));
+            drawer->RenderTexture(this->lock_time_tex, lx, 290 + lift + (s32)((1.0 - in_a) * 24.0), pu::ui::render::TextureRenderOptions((u8)al(255.0), (s32)(TexW(this->lock_time_tex) * k), (s32)(th * k), {}, {}, {}));
         }
-        Draw(drawer, this->lock_date_tex, (sw - TexW(this->lock_date_tex)) / 2, 300 + lift, al(205.0));
-
-        // Paused game card
         if(this->lock_title_tex != nullptr) {
-            const s32 cw = 820;
-            const s32 ch = 150;
-            const s32 cx = (sw - cw) / 2;
-            const s32 cy = 392 + lift;
-            RenderGlass(drawer, cx, cy, cw, ch, 30, vis, 150);
-            s32 tx = cx + 36;
+            const s32 cy = 640 + lift;
+            s32 tx = lx + 6;
             if(capture != nullptr) {
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(90.0) }, cx + 22, cy + 22, 192, 108, 8);
-                drawer->RenderTexture(capture, cx + 24, cy + 24, pu::ui::render::TextureRenderOptions((u8)al(255.0), 188, 104, {}, {}, {}));
-                tx = cx + 240;
+                drawer->RenderTexture(capture, tx, cy, pu::ui::render::TextureRenderOptions((u8)al(255.0), 192, 108, {}, {}, {}));
+                tx += 218;
             }
-            const auto bw = TexW(this->lock_badge_tex);
-            FillRR(drawer, { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, (u8)al(255.0) }, tx, cy + 26, bw + 28, 42, 21);
-            Draw(drawer, this->lock_badge_tex, tx + 14, cy + 32, al(255.0));
-            Draw(drawer, this->lock_played_tex, tx + bw + 46, cy + 32, al(190.0));
-            RenderTextFit(drawer, this->lock_title_tex, (double)tx, cy + 82, (double)(cx + cw - 30 - tx), (u8)al(255.0), false);
+            Draw(drawer, this->lock_badge_tex, tx, cy + 8, al(170.0));
+            Draw(drawer, this->lock_played_tex, tx + TexW(this->lock_badge_tex) + 18, cy + 8, al(170.0));
+            RenderTextFit(drawer, this->lock_title_tex, (double)tx, cy + 46, 760.0, (u8)al(255.0), false);
         }
 
-        // Controls: Bluetooth, brightness, volume
+        // Right column: one quiet list. Actions, a hairline, then the controls.
         this->lock_hits.clear();
         this->LockRefreshBluetooth(false);
-        {
-            const s32 bw = 420;
-            const s32 slw = 400;
-            const s32 h = 92;
-            const s32 gap = 24;
-            s32 x = (sw - (bw + 2 * slw + 2 * gap)) / 2;
-            const s32 y = 590 + lift;
-            const auto connected = this->lock_bt_str != "Bluetooth";
-            RenderGlass(drawer, x, y, bw, h, h / 2, vis, connected ? 200 : 130);
-            if(connected) {
-                FillRR(drawer, { 0x3B, 0x82, 0xF6, (u8)al(150.0) }, x, y, bw, h, h / 2);
-            }
-            RenderTextFit(drawer, this->lock_bt_tex, (double)(x + 40), y + 10, (double)(bw - 70), (u8)al(255.0), false);
-            RenderTextFit(drawer, this->lock_bt_sub_tex, (double)(x + 40), y + 50, (double)(bw - 70), (u8)al(160.0), false);
-            this->lock_hits.push_back({ 10, x, y, bw, h });
-            x += bw + gap;
-
-            for(s32 i = 0; i < 2; i++) {
-                const auto ok = (i == 0) ? this->lock_lbl_ok : this->lock_aud_ok;
-                const auto v = (i == 0) ? (double)this->lock_bright : ((double)this->lock_vol / (double)std::max(1, this->lock_vol_max));
-                RenderGlass(drawer, x, y, slw, h, h / 2, vis, 130);
-                Draw(drawer, this->lock_ctl_texs[i], x + 36, y + 10, al(ok ? 200.0 : 90.0));
-                const s32 tx = x + 40;
-                const s32 tw = slw - 80;
-                const s32 ty = y + 62;
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(50.0) }, tx, ty - 5, tw, 10, 5);
-                if(ok) {
-                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(235.0) }, tx, ty - 5, std::max(10, (s32)(tw * v)), 10, 5);
-                    const auto knob = (this->lock_drag == 20 + i) ? 17 : 13;
-                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(255.0) }, tx + (s32)(tw * v) - knob, ty - knob, knob * 2, knob * 2, knob);
-                    this->lock_hits.push_back({ 20 + i, tx, ty - 20, tw, 40 });
-                }
-                x += slw + gap;
-            }
-        }
-
-        // Options: the same button three times
         this->lock_pop *= std::pow(0.86, this->fx_k);
         if((this->lock_btn != 0) && (this->lock_out < 0.0) && ((this->fx_time - this->lock_last) > 1.2)) {
             this->lock_btn = 0;
             this->lock_count = 0;
         }
+        const auto n_act = (s32)this->lock_opt_texs.size();
+        const auto rows = n_act + 3;
+        this->lock_sel = std::clamp(this->lock_sel, 0, rows - 1);
+        const s32 rx = 1150;
+        const s32 rw = 620;
+        const s32 row_h = 68;
+        const s32 row_big = 100;
+        const s32 sep_h = 34;
+        // Row geometry: sliders grow when focused to show their track
+        s32 row_y[16] = {};
+        s32 row_hh[16] = {};
+        s32 bottom = 0;
         {
-            const s32 ow = 430;
-            const s32 oh = 112;
-            const s32 gap = 28;
-            const auto n = (s32)this->lock_opt_texs.size();
-            s32 ox = (sw - (n * ow + (n - 1) * gap)) / 2;
-            const s32 oy = 800 + lift;
-            Draw(drawer, this->lock_hint_tex, (sw - TexW(this->lock_hint_tex)) / 2, oy - 58, al(150.0));
-            for(s32 i = 0; i < n; i++) {
-                const auto active = this->lock_btn == this->lock_opt_keys.at(i);
-                const auto count = active ? this->lock_count : 0;
-                const auto grow = active ? (0.04 * this->lock_pop) : 0.0;
-                const auto w = (s32)(ow * (1.0 + grow));
-                const auto h = (s32)(oh * (1.0 + grow));
-                const auto x = ox - (w - ow) / 2;
-                const auto y = oy - (h - oh) / 2;
-                RenderGlass(drawer, x, y, w, h, h / 2, vis, active ? 195 : 130);
-                if(active) {
-                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(30.0 + 40.0 * this->lock_pop) }, x, y, w, h, h / 2);
+            s32 oy = 200 + lift;
+            for(s32 r = 0; r < rows; r++) {
+                if(r == n_act) {
+                    oy += sep_h;
                 }
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(235.0) }, x + 28, y + h / 2 - 30, 60, 60, 30);
-                auto key_tex = this->lock_key_texs.at(i);
-                Draw(drawer, key_tex, x + 58 - TexW(key_tex) / 2, y + h / 2 - TexH(key_tex) / 2, al(255.0));
-                Draw(drawer, this->lock_opt_texs.at(i), x + 110, y + h / 2 - 34, al(255.0));
-                for(s32 dot = 0; dot < 3; dot++) {
-                    const auto filled = dot < (s32)count;
-                    const auto r = filled ? 9 : 7;
-                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(filled ? 255.0 : 70.0) }, x + 116 + dot * 30 - r, y + h / 2 + 24 - r, r * 2, r * 2, r);
-                }
-                this->lock_hits.push_back({ i, x, y, w, h });
-                ox += ow + gap;
+                const auto is_slider = r >= n_act + 1;
+                row_y[r] = oy;
+                row_hh[r] = (is_slider && (r == this->lock_sel)) ? row_big : row_h;
+                oy += row_hh[r] + 6;
             }
+            bottom = oy;
+            // The hairline between actions and controls
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(34.0) }, rx + 24, row_y[n_act] - sep_h / 2 - 3, rw - 48, 1, 0);
+        }
+        {
+            const auto ty = (double)row_y[this->lock_sel];
+            const auto th = (double)row_hh[this->lock_sel];
+            if(!this->lock_lens_init) {
+                this->lock_lens_init = true;
+                this->lock_lens_y = ty;
+                this->lock_lens_h = th;
+            }
+            this->lock_lens_y = this->FxApproach(this->lock_lens_y, ty, 0.32);
+            this->lock_lens_h = this->FxApproach(this->lock_lens_h, th, 0.32);
+            const auto r = (s32)std::min(34.0, this->lock_lens_h / 2.0);
+            RenderGlass(drawer, rx, (s32)this->lock_lens_y, rw, (s32)this->lock_lens_h, r, vis, 92);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(22.0) }, rx, (s32)this->lock_lens_y, rw, (s32)(this->lock_lens_h / 2.0), r);
+        }
+        const auto glyph = [&](const s32 idx, const s32 cx, const s32 cy, const double a) {
+            auto icon = (idx >= 0) && (idx < 7) ? this->sheet_icons_lock[idx] : nullptr;
+            if(icon != nullptr) {
+                drawer->RenderTexture(icon, cx - 20, cy - 20, pu::ui::render::TextureRenderOptions((u8)al(a), 40, 40, {}, {}, {}));
+            }
+        };
+        for(s32 r = 0; r < rows; r++) {
+            const auto f = r == this->lock_sel;
+            const auto dx = f ? 10 : 0;
+            const auto ta = f ? 255.0 : 118.0;
+            const auto y = row_y[r];
+            const auto mid = y + row_h / 2;
+            const s32 lab_x = rx + 82 + dx;
+            if(r < n_act) {
+                // Actions: pressed three times to go
+                const auto key = this->lock_opt_keys.at(r);
+                glyph((key == HidNpadButton_A) && g_GlobalSettings.IsSuspended() ? 0 : ((key == HidNpadButton_Y) ? 1 : 2), rx + 44 + dx, mid, ta);
+                auto tex = this->lock_opt_texs.at(r);
+                Draw(drawer, tex, lab_x, mid - TexH(tex) / 2, al(ta));
+                if(f && (this->lock_btn == key)) {
+                    for(s32 dot = 0; dot < 3; dot++) {
+                        const auto filled = dot < (s32)this->lock_count;
+                        const auto rr = filled ? 8 + (s32)(3.0 * this->lock_pop) : 6;
+                        FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(filled ? 255.0 : 60.0) }, rx + rw - 92 + dot * 26 - rr, mid - rr, rr * 2, rr * 2, rr);
+                    }
+                }
+            }
+            else if(r == n_act) {
+                // Headphones: one press to connect the paired pair
+                glyph(3, rx + 44 + dx, mid, ta);
+                RenderTextFit(drawer, this->lock_bt_tex, (double)lab_x, mid - TexH(this->lock_bt_tex) / 2, (double)(rw - 260), (u8)al(ta), false);
+                if(this->lock_bt_sub_tex != nullptr) {
+                    const auto connected = this->lock_bt_connected;
+                    if(connected) {
+                        SDL_SetTextureColorMod(this->lock_bt_sub_tex, 0x5B, 0xE3, 0x8A);
+                    }
+                    Draw(drawer, this->lock_bt_sub_tex, rx + rw - 32 - TexW(this->lock_bt_sub_tex), mid - TexH(this->lock_bt_sub_tex) / 2, al(connected ? 235.0 : (f ? 220.0 : 96.0)));
+                    if(connected) {
+                        SDL_SetTextureColorMod(this->lock_bt_sub_tex, 0xFF, 0xFF, 0xFF);
+                    }
+                }
+            }
+            else {
+                // Brightness and volume: the value until focused, then the track
+                const auto i = r - n_act - 1;
+                const auto ok = (i == 0) ? this->lock_lbl_ok : this->lock_aud_ok;
+                const auto v = (i == 0) ? (double)this->lock_bright : ((double)this->lock_vol / (double)std::max(1, this->lock_vol_max));
+                glyph(4 + i, rx + 44 + dx, mid, ok ? ta : 70.0);
+                Draw(drawer, this->lock_ctl_texs[i], lab_x, mid - TexH(this->lock_ctl_texs[i]) / 2, al(ok ? ta : 70.0));
+                const auto val = std::to_string((s32)std::lround(v * 100.0));
+                if(val != this->lock_val_str[i]) {
+                    this->lock_val_str[i] = val;
+                    Free(this->lock_val_texs[i]);
+                    this->lock_val_texs[i] = Text(pu::ui::DefaultFontSize::Medium, val);
+                }
+                Draw(drawer, this->lock_val_texs[i], rx + rw - 32 - TexW(this->lock_val_texs[i]), mid - TexH(this->lock_val_texs[i]) / 2, al(f ? 220.0 : 96.0));
+                if(f && ok) {
+                    const s32 tx = lab_x;
+                    const s32 tw = rx + rw - 40 - tx;
+                    const s32 ty = y + row_h + 8;
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(46.0) }, tx, ty - 3, tw, 6, 3);
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(240.0) }, tx, ty - 3, std::max(6, (s32)(tw * v)), 6, 3);
+                    const auto knob = (this->lock_drag == 20 + i) ? 15 : 12;
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)al(255.0) }, tx + (s32)(tw * v) - knob, ty - knob, knob * 2, knob * 2, knob);
+                    this->lock_hits.push_back({ 20 + i, tx, ty - 22, tw, 44 });
+                }
+            }
+            this->lock_hits.push_back({ 100 + r, rx, y, rw, row_hh[r] });
+        }
+
+        // One line that says what A does here
+        {
+            std::string hint;
+            if(this->lock_sel < n_act) {
+                const auto key = this->lock_opt_keys.at(this->lock_sel);
+                const auto action = ((key == HidNpadButton_A) && g_GlobalSettings.IsSuspended()) ? nxt::T("lock_resume") : ((key == HidNpadButton_Y) ? nxt::T("lock_album") : nxt::T("lock_library"));
+                hint = nxt::Sub(nxt::T("lock_triple"), "action", action);
+            }
+            else if(this->lock_sel == n_act) {
+                hint = !this->lock_bt_paired ? nxt::T("h_bt_none") : nxt::Sub(nxt::T(this->lock_bt_connected ? "h_bt_on" : "h_bt_off"), "name", this->lock_bt_str);
+            }
+            else {
+                hint = nxt::T("lock_adjust");
+            }
+            if(hint != this->lock_hint_str) {
+                this->lock_hint_str = hint;
+                Free(this->lock_hint_tex);
+                this->lock_hint_tex = Text(pu::ui::DefaultFontSize::Small, hint);
+            }
+            RenderTextFit(drawer, this->lock_hint_tex, (double)(rx + 32), bottom + 18, (double)(rw - 40), (u8)al(115.0), false);
         }
 
         if(this->lock_out >= 1.0) {
@@ -3368,7 +3782,7 @@ namespace ul::menu::ui {
 
         this->FlipFree();
         entry.TryLoadNacp();
-        this->flip_title = Text(pu::ui::DefaultFontSize::Large, entry.control.name.empty() ? "Sin título" : entry.control.name);
+        this->flip_title = Text(pu::ui::DefaultFontSize::Large, entry.control.name.empty() ? nxt::T("untitled") : entry.control.name);
         for(auto &secs : this->flip_week) {
             secs = 0;
         }
@@ -3383,7 +3797,7 @@ namespace ul::menu::ui {
                 this->flip_week[i] = own.week[i];
             }
 
-            lines.push_back((total_secs > 0) ? ("Jugaste " + FormatPlayed(total_secs)) : "Todavía sin tiempo de juego registrado");
+            lines.push_back((total_secs > 0) ? nxt::Sub(nxt::T("flip_played"), "t", FormatPlayed(total_secs)) : nxt::T("flip_none"));
             s64 days_ago = own.days_since_last;
             if(last_posix > 0) {
                 const auto diff = (s64)::time(nullptr) - last_posix;
@@ -3393,28 +3807,28 @@ namespace ul::menu::ui {
                 }
             }
             if(days_ago == 0) {
-                lines.push_back("Última vez: hoy");
+                lines.push_back(nxt::T("flip_today"));
             }
             else if(days_ago == 1) {
-                lines.push_back("Última vez: ayer");
+                lines.push_back(nxt::T("flip_yesterday"));
             }
             else if(days_ago > 1) {
-                lines.push_back("Última vez: hace " + std::to_string(days_ago) + " días");
+                lines.push_back(nxt::Sub(nxt::T("flip_days"), "n", std::to_string(days_ago)));
             }
             if(own.streak >= 2) {
-                lines.push_back("Racha: " + std::to_string(own.streak) + " días seguidos");
+                lines.push_back(nxt::Sub(nxt::T("flip_streak"), "n", std::to_string(own.streak)));
             }
             else if(own.streak == 1) {
-                lines.push_back("Racha: 1 día. Volvé mañana para sumar.");
+                lines.push_back(nxt::T("flip_streak1"));
             }
             else {
-                lines.push_back("Sin racha activa");
+                lines.push_back(nxt::T("flip_nostreak"));
             }
             if(launches > 0) {
-                lines.push_back("Lo abriste " + std::to_string(launches) + ((launches == 1) ? " vez" : " veces"));
+                lines.push_back((launches == 1) ? nxt::T("flip_opened1") : nxt::Sub(nxt::T("flip_opened"), "n", std::to_string(launches)));
             }
             if(!entry.control.author.empty()) {
-                lines.push_back(entry.control.author + (entry.control.version.empty() ? "" : ("  ·  Versión " + entry.control.version)));
+                lines.push_back(entry.control.author + (entry.control.version.empty() ? "" : ("  ·  " + nxt::Sub(nxt::T("version"), "v", entry.control.version))));
             }
         }
         else {
@@ -3423,22 +3837,22 @@ namespace ul::menu::ui {
                 lines.push_back(entry.control.author);
             }
             if(!entry.control.version.empty()) {
-                lines.push_back("Versión " + entry.control.version);
+                lines.push_back(nxt::Sub(nxt::T("version"), "v", entry.control.version));
             }
         }
         for(const auto &line : lines) {
             this->flip_lines.push_back(Text(pu::ui::DefaultFontSize::Medium, line));
         }
 
-        static const char *const DayLetters[7] = { "D", "L", "M", "M", "J", "V", "S" };
+        const auto day_letters = nxt::T("daylet");
         const auto now = ::time(nullptr);
         const auto lt = localtime(&now);
         const auto today_wd = (lt != nullptr) ? lt->tm_wday : 0;
         for(s32 i = 0; i < 7; i++) {
-            this->flip_days[i] = Text(pu::ui::DefaultFontSize::Small, DayLetters[(((today_wd - (6 - i)) % 7) + 7) % 7]);
+            this->flip_days[i] = Text(pu::ui::DefaultFontSize::Small, (day_letters.size() >= 7) ? day_letters.substr((((today_wd - (6 - i)) % 7) + 7) % 7, 1) : std::string(""));
         }
-        this->flip_chart_title = Text(pu::ui::DefaultFontSize::Small, "Últimos 7 días");
-        this->flip_hint = Text(pu::ui::DefaultFontSize::Small, "A  Jugar          X  Opciones          −  Volver");
+        this->flip_chart_title = Text(pu::ui::DefaultFontSize::Small, nxt::T("flip_week"));
+        this->flip_hint = Text(pu::ui::DefaultFontSize::Small, nxt::T("flip_hint"));
 
         const auto pos = ((this->shelf_target % nv) + nv) % nv;
         this->flip_icon = this->IconForPos(pos, true);
@@ -3608,12 +4022,12 @@ namespace ul::menu::ui {
             }
         }
         if(candidates.size() < 2) {
-            g_MenuApplication->ShowNotification("Hacen falta al menos dos juegos en este estante", 2200);
+            g_MenuApplication->ShowNotification(nxt::T("duel_need2"), 2200);
             return;
         }
         this->DuelFree();
-        this->duel_title = Text(pu::ui::DefaultFontSize::Large, "¿A qué juego?");
-        this->duel_vs = Text(pu::ui::DefaultFontSize::Large, "o");
+        this->duel_title = Text(pu::ui::DefaultFontSize::Large, nxt::T("duel_title"));
+        this->duel_vs = Text(pu::ui::DefaultFontSize::Large, nxt::T("duel_or"));
         this->duel_rolls = 0;
         this->duel_tired = false;
         this->duel_pos[0] = -1;
@@ -3630,14 +4044,9 @@ namespace ul::menu::ui {
             // Three throws is the deal
             if(!this->duel_tired) {
                 this->duel_tired = true;
-                static const char *const Lines[] = {
-                    "El dado se cansó. Es uno de estos dos, sin vueltas.",
-                    "Tres tiradas y ni una te convenció. Elegí con el corazón.",
-                    "No hay cuarta. El destino ya habló dos veces.",
-                    "El dado pidió vacaciones. Te quedás con estos.",
-                };
+
                 Free(this->duel_msg);
-                this->duel_msg = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), Lines[armGetSystemTick() % (sizeof(Lines) / sizeof(Lines[0]))], { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, 0xFF });
+                this->duel_msg = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), nxt::T("duel_tired_" + std::to_string(armGetSystemTick() % 4)), { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, 0xFF });
             }
             this->Haptic(0.7f, 110.0f, 0.05);
             this->Haptic(0.7f, 110.0f, 0.05, 0.12);
@@ -3691,11 +4100,11 @@ namespace ul::menu::ui {
             entry.TryLoadNacp();
             this->IconForPos(this->duel_pos[k], true);
             Free(this->duel_names[k]);
-            this->duel_names[k] = Text(pu::ui::DefaultFontSize::MediumLarge, entry.control.name.empty() ? "Sin título" : entry.control.name);
+            this->duel_names[k] = Text(pu::ui::DefaultFontSize::MediumLarge, entry.control.name.empty() ? nxt::T("untitled") : entry.control.name);
             this->duel_show[k] = this->duel_pos[k];
         }
         Free(this->duel_hint);
-        this->duel_hint = Text(pu::ui::DefaultFontSize::Small, "Izquierda / derecha  Elegir          A  Confirmar          Y  Tirar de nuevo (" + std::to_string(this->duel_rolls) + " de 3)          B  Salir");
+        this->duel_hint = Text(pu::ui::DefaultFontSize::Small, nxt::Sub(nxt::T("duel_hint"), "n", std::to_string(this->duel_rolls)));
     }
 
     void EntryMenu::DuelClose(const bool pick) {

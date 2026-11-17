@@ -1,3 +1,4 @@
+#include <map>
 #include <ul/menu/ui/ui_IMenuLayout.hpp>
 #include <ul/menu/ui/ui_Common.hpp>
 #include <ul/menu/ui/ui_MenuApplication.hpp>
@@ -13,6 +14,7 @@ namespace ul::menu::ui {
         s32 g_HomeButtonPressHandleCount = 0;
 
         std::vector<std::string> g_WeekdayList;
+        u32 g_WeekdayGen = 0;
 
         void EnsureWeekdayList() {
             if(g_WeekdayList.empty()) {
@@ -21,6 +23,16 @@ namespace ul::menu::ui {
                 }
             }
         }
+
+    }
+
+    void ResetWeekdayList() {
+        g_WeekdayList.clear();
+        EnsureWeekdayList();
+        g_WeekdayGen++;
+    }
+
+    namespace {
 
         void OnFinishedSleep() {
             // Reset and reinitialize audio (force-avoid post-sleep audio stutter in audout)
@@ -65,8 +77,12 @@ namespace ul::menu::ui {
 
     void IMenuLayout::UpdateDateText(pu::ui::elm::TextBlock::Ref &date_text) {
         const auto cur_date = os::GetCurrentDate();
-        if(this->last_date != cur_date) {
+        // Each layout has its own date text: remember which language it last showed
+        static std::map<const void*, u32> shown_lang_gen;
+        auto &gen = shown_lang_gen[date_text.get()];
+        if((this->last_date != cur_date) || (gen != g_WeekdayGen)) {
             this->last_date = cur_date;
+            gen = g_WeekdayGen;
 
             char cur_date_str[0x40] = {};
             sprintf(cur_date_str, "%02d/%02d (%s)", cur_date.day, cur_date.month, g_WeekdayList.at(cur_date.weekday_idx).c_str());

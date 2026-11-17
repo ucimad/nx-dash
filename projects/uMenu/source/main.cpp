@@ -1,3 +1,4 @@
+#include <ul/menu/ui/ui_NxDashText.hpp>
 #include <ul/fs/fs_Stdio.hpp>
 #include <ul/cfg/cfg_Config.hpp>
 #include <ul/util/util_Json.hpp>
@@ -231,6 +232,10 @@ namespace {
 
         // Get system language and load translations (default one if not present)
         ul::cfg::LoadLanguageJsons(ul::MenuLanguagesPath, g_GlobalSettings.main_lang, g_GlobalSettings.default_lang);
+        // NX Dash: the selected profile may use its own language
+        if(accountUidIsValid(&g_GlobalSettings.system_status.selected_user)) {
+            ul::menu::ui::nxt::ApplyProfileLanguage();
+        }
 
         auto renderer_opts = pu::ui::render::RendererInitOptions(SDL_INIT_EVERYTHING, pu::ui::render::RendererHardwareFlags);
         renderer_opts.SetPlServiceType(PlServiceType_User);
