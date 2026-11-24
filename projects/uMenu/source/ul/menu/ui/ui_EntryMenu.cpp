@@ -1370,6 +1370,10 @@ namespace ul::menu::ui {
             this->FlipInput(keys_down, touch_pos);
             return;
         }
+        if(this->br_open) {
+            this->BracketInput(keys_down, touch_pos);
+            return;
+        }
         if(this->duel_open) {
             this->DuelInput(keys_down, touch_pos);
             return;
@@ -3179,6 +3183,7 @@ namespace ul::menu::ui {
         }
         this->RenderFlip(drawer);
         this->RenderDuel(drawer);
+        this->RenderBracket(drawer);
         this->RenderLock(drawer);
     }
 
@@ -4162,6 +4167,11 @@ namespace ul::menu::ui {
         else if(keys_down & HidNpadButton_Y) {
             this->DuelRoll();
         }
+        else if(keys_down & HidNpadButton_X) {
+            // From the dice to the bracket: you choose who wins
+            this->DuelClose(false);
+            this->BracketOpen();
+        }
     }
 
     void EntryMenu::RenderDuel(pu::ui::render::Renderer::Ref &drawer) {
@@ -4255,6 +4265,394 @@ namespace ul::menu::ui {
         }
         Draw(drawer, this->duel_vs, (sw - TexW(this->duel_vs)) / 2, cy + ch / 2 - 40, a * 170.0);
         Draw(drawer, this->duel_hint, (sw - TexW(this->duel_hint)) / 2, sh - 150, a * 150.0);
+    }
+
+
+    // ---- Bracket: you decide who beats whom ----
+
+    void EntryMenu::BracketFree() {
+        Free(this->br_title);
+        Free(this->br_sub);
+        Free(this->br_hint);
+        Free(this->br_vs);
+        for(auto &tex : this->br_names) {
+            Free(tex);
+        }
+        this->br_hint_str.clear();
+        this->br_title_str.clear();
+    }
+
+    void EntryMenu::BracketOpen() {
+        std::vector<s32> pool;
+        for(s32 pos = 0; pos < (s32)this->shelf_valid.size(); pos++) {
+            const auto &entry = this->cur_entries.at(this->shelf_valid.at(pos));
+            if(entry.Is<EntryType::Application>() || entry.Is<EntryType::Homebrew>()) {
+                pool.push_back(pos);
+            }
+        }
+        if(pool.size() < 4) {
+            g_MenuApplication->ShowNotification(nxt::T("br_need"), 2200);
+            return;
+        }
+        u64 seed = armGetSystemTick() | 1;
+        for(s32 i = (s32)pool.size() - 1; i > 0; i--) {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            std::swap(pool.at(i), pool.at(seed % (u64)(i + 1)));
+        }
+        pool.resize((pool.size() >= 8) ? 8 : 4);
+        for(const auto pos : pool) {
+            this->cur_entries.at(this->shelf_valid.at(pos)).TryLoadNacp();
+            this->IconForPos(pos, true);
+        }
+        this->BracketFree();
+        this->br_vs = Text(pu::ui::DefaultFontSize::Large, nxt::T("br_vs"));
+        this->br_rounds.clear();
+        this->br_rounds.push_back(pool);
+        this->br_rounds.push_back({});
+        this->br_round = 0;
+        this->br_match = 0;
+        this->br_sel = 0;
+        this->br_picked = 0;
+        this->br_champ = -1;
+        this->br_pop = 0.0;
+        this->br_anim = std::max(this->br_anim, 0.0);
+        this->br_touching = false;
+        this->br_open = true;
+        this->BracketRefreshMatch();
+    }
+
+    void EntryMenu::BracketRefreshMatch() {
+        for(s32 k = 0; k < 2; k++) {
+            Free(this->br_names[k]);
+        }
+        if(this->br_champ >= 0) {
+            auto &entry = this->cur_entries.at(this->shelf_valid.at(this->br_champ));
+            this->br_names[0] = Text(pu::ui::DefaultFontSize::MediumLarge, entry.control.name.empty() ? nxt::T("untitled") : entry.control.name);
+        }
+        else {
+            const auto &round = this->br_rounds.at(this->br_round);
+            for(s32 k = 0; k < 2; k++) {
+                auto &entry = this->cur_entries.at(this->shelf_valid.at(round.at(this->br_match * 2 + k)));
+                this->br_names[k] = Text(pu::ui::DefaultFontSize::MediumLarge, entry.control.name.empty() ? nxt::T("untitled") : entry.control.name);
+            }
+        }
+        Free(this->br_sub);
+        if(this->br_champ < 0) {
+            const auto matches = this->br_rounds.at(this->br_round).size() / 2;
+            this->br_sub = Text(pu::ui::DefaultFontSize::Small, nxt::Sub(nxt::Sub(nxt::T("br_match"), "a", std::to_string(this->br_match + 1)), "b", std::to_string(matches)));
+        }
+    }
+
+    void EntryMenu::BracketPick() {
+        auto &round = this->br_rounds.at(this->br_round);
+        const auto winner = round.at(this->br_match * 2 + this->br_sel);
+        this->br_rounds.at(this->br_round + 1).push_back(winner);
+        this->br_picked++;
+        this->br_pop = 1.0;
+        this->NxSfx(2);
+        this->Haptic(0.5f, 180.0f, 0.04);
+        const auto matches = (s32)round.size() / 2;
+        if(this->br_match + 1 < matches) {
+            this->br_match++;
+        }
+        else if(this->br_rounds.at(this->br_round + 1).size() == 1) {
+            // The final: a champion
+            this->br_round++;
+            this->br_champ = winner;
+            this->Haptic(0.8f, 140.0f, 0.06);
+            this->Haptic(0.8f, 200.0f, 0.06, 0.12);
+        }
+        else {
+            this->br_round++;
+            this->br_match = 0;
+            this->br_rounds.push_back({});
+        }
+        this->br_sel = 0;
+        this->BracketRefreshMatch();
+    }
+
+    void EntryMenu::BracketUndo() {
+        this->br_sel = 0;
+        if(this->br_champ >= 0) {
+            this->br_champ = -1;
+            this->br_round--;
+            this->br_rounds.resize(this->br_round + 2);
+            this->br_rounds.at(this->br_round + 1).pop_back();
+            this->br_match = (s32)this->br_rounds.at(this->br_round).size() / 2 - 1;
+        }
+        else if(this->br_match > 0) {
+            this->br_match--;
+            this->br_rounds.at(this->br_round + 1).pop_back();
+        }
+        else if(this->br_round > 0) {
+            this->br_rounds.resize(this->br_round + 1);
+            this->br_round--;
+            this->br_match = (s32)this->br_rounds.at(this->br_round).size() / 2 - 1;
+            this->br_rounds.at(this->br_round + 1).pop_back();
+        }
+        else {
+            this->br_open = false;
+            return;
+        }
+        this->br_picked = std::max(0, this->br_picked - 1);
+        this->NxSfx(0);
+        this->BracketRefreshMatch();
+    }
+
+    void EntryMenu::BracketPlay() {
+        if(this->br_champ < 0) {
+            return;
+        }
+        this->br_open = false;
+        this->br_launch_pos = this->br_champ;
+        this->br_launch_t = 0.38;
+        this->ShelfMoveToPos(this->br_champ);
+    }
+
+    void EntryMenu::BracketInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        if(!touch_pos.IsEmpty()) {
+            this->br_touching = true;
+            this->br_tx = touch_pos.x;
+            this->br_ty = touch_pos.y;
+            return;
+        }
+        if(this->br_touching) {
+            this->br_touching = false;
+            for(const auto &hit : this->br_hits) {
+                if(Hit(this->br_tx, this->br_ty, hit.x, hit.y, hit.w, hit.h)) {
+                    if(this->br_champ >= 0) {
+                        this->BracketPlay();
+                    }
+                    else if(hit.pos == this->br_sel) {
+                        this->BracketPick();
+                    }
+                    else {
+                        this->br_sel = hit.pos;
+                        this->Haptic(0.22f, 260.0f, 0.012);
+                    }
+                    return;
+                }
+            }
+            return;
+        }
+        if(keys_down & HidNpadButton_B) {
+            this->BracketUndo();
+        }
+        else if(this->br_champ >= 0) {
+            if(keys_down & HidNpadButton_A) {
+                this->BracketPlay();
+            }
+            else if(keys_down & HidNpadButton_Y) {
+                this->BracketOpen();
+            }
+        }
+        else if(keys_down & (HidNpadButton_AnyLeft | HidNpadButton_AnyRight)) {
+            const auto sel = (keys_down & HidNpadButton_AnyLeft) ? 0 : 1;
+            if(sel != this->br_sel) {
+                this->br_sel = sel;
+                this->NxSfx(0);
+                this->Haptic(0.22f, 260.0f, 0.012);
+            }
+        }
+        else if(keys_down & HidNpadButton_A) {
+            this->BracketPick();
+        }
+    }
+
+    void EntryMenu::RenderBracket(pu::ui::render::Renderer::Ref &drawer) {
+        // After "Play": let the shelf glide to the champion, then press A for you
+        if(this->br_launch_t > 0.0) {
+            this->br_launch_t -= this->fx_dt;
+            if(this->br_launch_t <= 0.0) {
+                const auto nv = (s32)this->shelf_valid.size();
+                const auto cur = (nv > 0) ? (((this->shelf_target % nv) + nv) % nv) : -1;
+                if((cur == this->br_launch_pos) && !this->IsModalOpen()) {
+                    this->shelf_press = 1.0;
+                    this->cur_entry_input_cb(HidNpadButton_A);
+                }
+            }
+        }
+
+        this->br_anim = this->FxApproach(this->br_anim, this->br_open ? 1.0 : 0.0, this->br_open ? 0.18 : 0.28);
+        if(!this->br_open && (this->br_anim < 0.004)) {
+            if(this->br_vs != nullptr) {
+                this->BracketFree();
+            }
+            this->br_anim = 0.0;
+            this->br_hits.clear();
+            return;
+        }
+        if(this->br_rounds.empty()) {
+            return;
+        }
+        const auto a = SmoothStep(this->br_anim);
+        const auto al = [&](const double v) {
+            return (u8)std::clamp(v * a, 0.0, 255.0);
+        };
+        const s32 sw = pu::ui::render::ScreenWidth;
+        const s32 sh = pu::ui::render::ScreenHeight;
+        drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, al(244.0) }, 0, 0, sw, sh);
+        this->br_pop *= std::pow(0.86, this->fx_k);
+        this->br_hits.clear();
+
+        const auto size = (s32)this->br_rounds.at(0).size();
+        const auto levels = (size == 8) ? 4 : 3;
+
+        // Title: the round, or the verdict
+        {
+            std::string title;
+            if(this->br_champ >= 0) {
+                title = nxt::T("br_champ");
+            }
+            else {
+                const auto from_end = levels - 1 - this->br_round;
+                title = nxt::T((from_end == 1) ? "br_f" : ((from_end == 2) ? "br_s" : "br_q"));
+            }
+            if(title != this->br_title_str) {
+                this->br_title_str = title;
+                Free(this->br_title);
+                if(this->br_champ >= 0) {
+                    this->br_title = pu::ui::render::RenderText(pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium), title, { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, 0xFF });
+                }
+                else {
+                    this->br_title = Text(pu::ui::DefaultFontSize::Large, title);
+                }
+            }
+        }
+        Draw(drawer, this->br_title, (sw - TexW(this->br_title)) / 2, (this->br_champ >= 0) ? 86 : 64, a * 255.0);
+        if((this->br_champ < 0) && (this->br_sub != nullptr)) {
+            Draw(drawer, this->br_sub, (sw - TexW(this->br_sub)) / 2, 132, a * 150.0);
+        }
+
+        // A case on glass, like the duel
+        const auto card = [&](const s32 pos, s32 x, s32 y, const s32 w, const bool sel, const bool gold, pu::sdl2::Texture name) {
+            const s32 h = (s32)(w * 1.18);
+            const auto grow = sel ? 12 : 0;
+            x -= grow;
+            y -= grow;
+            const auto ww = w + 2 * grow;
+            const auto hh = h + 2 * grow;
+            if(sel) {
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(40.0) }, x - 12, y - 12, ww + 24, hh + 24, 40);
+                if(gold) {
+                    FillRR(drawer, { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, al(255.0) }, x - 3, y - 3, ww + 6, hh + 6, 34);
+                }
+                else {
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(235.0) }, x - 3, y - 3, ww + 6, hh + 6, 34);
+                }
+            }
+            RenderGlass(drawer, x, y, ww, hh, 30, a, sel ? 230 : 170);
+            const s32 art = ww - 90;
+            const s32 ax = x + 45;
+            const s32 ay = y + 40;
+            const auto color = gold ? ShelfActiveColor : ShelfCaseColor;
+            FillRR(drawer, { color.r, color.g, color.b, al(255.0) }, ax - 12, ay - 26, art + 24, art + 38, 10);
+            auto icon = this->IconForPos(pos, false);
+            if((icon != nullptr) && (icon->Get() != nullptr)) {
+                drawer->RenderTexture(icon->Get(), ax, ay, pu::ui::render::TextureRenderOptions(al(255.0), art, art, {}, {}, {}));
+            }
+            else {
+                drawer->RenderRectangleFill({ 0x1C, 0x1E, 0x28, al(255.0) }, ax, ay, art, art);
+            }
+            RenderTextFit(drawer, name, (double)x + (double)ww / 2.0, ay + art + 24, (double)(ww - 50), al(sel ? 255.0 : 150.0), true);
+            return ShelfHit { 0, x, y, ww, hh };
+        };
+
+        if(this->br_champ >= 0) {
+            const auto w = 320 + (s32)(30.0 * SmoothStep(std::clamp(1.0 - this->br_pop, 0.0, 1.0)));
+            auto hit = card(this->br_champ, (sw - w) / 2, 140, w, true, true, this->br_names[0]);
+            this->br_hits.push_back(hit);
+            // Gold dust
+            for(s32 i = 0; i < 26; i++) {
+                const auto an = i * 2.4;
+                const auto d = (1.0 - this->br_pop) * 360.0 + 40.0;
+                const auto px = sw / 2 + (s32)(std::cos(an) * d);
+                const auto py = 340 + (s32)(std::sin(an) * d * 0.6);
+                FillRR(drawer, { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, al(160.0 * this->br_pop) }, px, py, 7, 7, 3);
+            }
+        }
+        else {
+            const auto &round = this->br_rounds.at(this->br_round);
+            const s32 w = 380;
+            const s32 gap = 140;
+            const s32 y = 176;
+            for(s32 k = 0; k < 2; k++) {
+                const auto slide = (s32)((1.0 - a) * 120.0) * ((k == 0) ? -1 : 1);
+                const s32 x = sw / 2 + ((k == 0) ? (-gap / 2 - w) : (gap / 2)) + slide;
+                auto hit = card(round.at(this->br_match * 2 + k), x, y, w, k == this->br_sel, false, this->br_names[k]);
+                hit.pos = k;
+                this->br_hits.push_back(hit);
+            }
+            Draw(drawer, this->br_vs, (sw - TexW(this->br_vs)) / 2, y + (s32)(w * 0.55), a * 150.0);
+        }
+
+        // The whole bracket, small, along the bottom
+        {
+            const s32 bottom = sh - 96;
+            const s32 top = 730;
+            const s32 row_h = (bottom - top) / (levels - 1);
+            const s32 ih = 46;
+            const s32 span = sw - 520;
+            const auto slot_x = [&](const s32 level, const s32 i) {
+                const auto n = size >> level;
+                return 260 + (s32)((double)span * ((double)i + 0.5) / (double)n);
+            };
+            for(s32 level = 0; level < levels; level++) {
+                const auto n = size >> level;
+                const auto y = bottom - level * row_h;
+                const auto have = (level < (s32)this->br_rounds.size()) ? (s32)this->br_rounds.at(level).size() : 0;
+                for(s32 i = 0; i < n; i++) {
+                    const auto x = slot_x(level, i);
+                    const auto filled = i < have;
+                    if(level > 0) {
+                        // Axis-aligned connector: two stems, a bar, and a stem up
+                        const auto xa = slot_x(level - 1, i * 2);
+                        const auto xb = slot_x(level - 1, i * 2 + 1);
+                        const auto ymid = y + row_h / 2;
+                        const pu::ui::Color lc = { 0xFF, 0xFF, 0xFF, al(filled ? 110.0 : 40.0) };
+                        drawer->RenderRectangleFill(lc, xa - 1, ymid, 2, (y + row_h - ih / 2) - ymid);
+                        drawer->RenderRectangleFill(lc, xb - 1, ymid, 2, (y + row_h - ih / 2) - ymid);
+                        drawer->RenderRectangleFill(lc, xa, ymid - 1, xb - xa, 2);
+                        drawer->RenderRectangleFill(lc, x - 1, y + ih / 2, 2, ymid - (y + ih / 2));
+                    }
+                    const auto s = (level == levels - 1) ? ih + 14 : ih;
+                    if(filled) {
+                        const auto pos = this->br_rounds.at(level).at(i);
+                        const auto live = (this->br_champ < 0) && (level == this->br_round) && ((i / 2) == this->br_match);
+                        bool out = false;
+                        if((level + 1 < (s32)this->br_rounds.size()) && ((i / 2) < (s32)this->br_rounds.at(level + 1).size())) {
+                            out = this->br_rounds.at(level + 1).at(i / 2) != pos;
+                        }
+                        if(live) {
+                            FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(((i % 2) == this->br_sel) ? 240.0 : 90.0) }, x - s / 2 - 4, y - s / 2 - 4, s + 8, s + 8, 12);
+                        }
+                        if(level == levels - 1) {
+                            FillRR(drawer, { ShelfActiveColor.r, ShelfActiveColor.g, ShelfActiveColor.b, al(255.0) }, x - s / 2 - 4, y - s / 2 - 4, s + 8, s + 8, 12);
+                        }
+                        auto icon = this->IconForPos(pos, false);
+                        if((icon != nullptr) && (icon->Get() != nullptr)) {
+                            drawer->RenderTexture(icon->Get(), x - s / 2, y - s / 2, pu::ui::render::TextureRenderOptions(al(out ? 60.0 : 255.0), s, s, {}, {}, {}));
+                        }
+                    }
+                    else {
+                        FillRR(drawer, { 0xFF, 0xFF, 0xFF, al(18.0) }, x - s / 2, y - s / 2, s, s, 9);
+                    }
+                }
+            }
+        }
+
+        // One line that says what the buttons do right now
+        {
+            const auto hint = (this->br_champ >= 0) ? nxt::T("br_hintC") : (this->br_picked > 0 ? nxt::T("br_hint") : nxt::T("br_hint0"));
+            if(hint != this->br_hint_str) {
+                this->br_hint_str = hint;
+                Free(this->br_hint);
+                this->br_hint = Text(pu::ui::DefaultFontSize::Small, hint);
+            }
+            Draw(drawer, this->br_hint, (sw - TexW(this->br_hint)) / 2, sh - 48, a * 140.0);
+        }
     }
 
 }

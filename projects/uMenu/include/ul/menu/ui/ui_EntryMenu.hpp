@@ -352,6 +352,37 @@ namespace ul::menu::ui {
             bool duel_touching = false;
             s32 duel_tx = 0;
             s32 duel_ty = 0;
+            // Bracket mode
+            bool br_open = false;
+            double br_anim = 0.0;
+            std::vector<std::vector<s32>> br_rounds;
+            s32 br_round = 0;
+            s32 br_match = 0;
+            s32 br_sel = 0;
+            s32 br_picked = 0;
+            s32 br_champ = -1;
+            double br_pop = 0.0;
+            double br_launch_t = 0.0;
+            s32 br_launch_pos = -1;
+            pu::sdl2::Texture br_title = nullptr;
+            pu::sdl2::Texture br_sub = nullptr;
+            pu::sdl2::Texture br_hint = nullptr;
+            pu::sdl2::Texture br_vs = nullptr;
+            pu::sdl2::Texture br_names[2] = {};
+            std::string br_hint_str;
+            std::string br_title_str;
+            std::vector<ShelfHit> br_hits;
+            bool br_touching = false;
+            s32 br_tx = 0;
+            s32 br_ty = 0;
+            void BracketFree();
+            void BracketOpen();
+            void BracketRefreshMatch();
+            void BracketPick();
+            void BracketUndo();
+            void BracketPlay();
+            void BracketInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos);
+            void RenderBracket(pu::ui::render::Renderer::Ref &drawer);
             void DuelOpen();
             void DuelRoll();
             void DuelFree();
@@ -570,7 +601,7 @@ namespace ul::menu::ui {
             void RenderLayers(pu::ui::render::Renderer::Ref &drawer);
 
             inline bool IsModalOpen() {
-                return this->sheet_open || this->lock_open || this->flip_open || this->duel_open || (this->launch_t >= 0.0);
+                return this->sheet_open || this->lock_open || this->flip_open || this->duel_open || this->br_open || (this->launch_t >= 0.0);
             }
 
             inline bool IsLockOpen() {

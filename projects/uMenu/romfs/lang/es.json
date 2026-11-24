@@ -330,7 +330,7 @@
     "nx_duel_tired_1": "Tres tiradas y ni una te convenció. Elegí con el corazón.",
     "nx_duel_tired_2": "No hay cuarta. El destino ya habló dos veces.",
     "nx_duel_tired_3": "El dado pidió vacaciones. Te quedás con estos.",
-    "nx_duel_hint": "Izquierda / derecha  Elegir          A  Confirmar          Y  Tirar de nuevo ({n} de 3)          B  Salir",
+    "nx_duel_hint": "Izquierda / derecha  Elegir          A  Confirmar          Y  Tirar de nuevo ({n} de 3)          X  Torneo          B  Salir",
     "nx_opt_move": "Mover a categoría...",
     "nx_opt_new": "Nueva categoría con este juego...",
     "nx_opt_remove": "Quitar de la categoría",
@@ -345,5 +345,15 @@
     "nx_set_lang": "Idioma de NX Dash (este perfil)",
     "nx_set_lang_system": "Igual que la consola",
     "nx_set_lang_q": "¿En qué idioma querés NX Dash para este perfil?",
-    "nx_set_lang_done": "Idioma cambiado"
+    "nx_set_lang_done": "Idioma cambiado",
+    "nx_br_q": "Cuartos de final",
+    "nx_br_s": "Semifinal",
+    "nx_br_f": "Final",
+    "nx_br_champ": "Hoy se juega",
+    "nx_br_match": "Partido {a} de {b}",
+    "nx_br_hint": "Izquierda / derecha  Elegir          A  Pasa de ronda          B  Deshacer",
+    "nx_br_hint0": "Izquierda / derecha  Elegir          A  Pasa de ronda          B  Salir",
+    "nx_br_hintC": "A  Jugar          Y  Otro torneo          B  Deshacer",
+    "nx_br_need": "Hacen falta al menos cuatro juegos en este estante",
+    "nx_br_vs": "vs"
 }

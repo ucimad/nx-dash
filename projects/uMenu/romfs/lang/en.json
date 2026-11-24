@@ -330,7 +330,7 @@
     "nx_duel_tired_1": "Three rolls and none convinced you. Go with your heart.",
     "nx_duel_tired_2": "There's no fourth roll. Fate has spoken twice.",
     "nx_duel_tired_3": "The dice went on vacation. You're keeping these.",
-    "nx_duel_hint": "Left / right  Choose          A  Confirm          Y  Roll again ({n} of 3)          B  Exit",
+    "nx_duel_hint": "Left / right  Choose          A  Confirm          Y  Roll again ({n} of 3)          X  Bracket          B  Exit",
     "nx_opt_move": "Move to category...",
     "nx_opt_new": "New category with this game...",
     "nx_opt_remove": "Remove from category",
@@ -345,5 +345,15 @@
     "nx_set_lang": "NX Dash language (this profile)",
     "nx_set_lang_system": "Same as the console",
     "nx_set_lang_q": "Which language should NX Dash use for this profile?",
-    "nx_set_lang_done": "Language changed"
+    "nx_set_lang_done": "Language changed",
+    "nx_br_q": "Quarterfinals",
+    "nx_br_s": "Semifinals",
+    "nx_br_f": "Final",
+    "nx_br_champ": "Tonight you play",
+    "nx_br_match": "Match {a} of {b}",
+    "nx_br_hint": "Left / right  Choose          A  Advances          B  Undo",
+    "nx_br_hint0": "Left / right  Choose          A  Advances          B  Exit",
+    "nx_br_hintC": "A  Play          Y  New bracket          B  Undo",
+    "nx_br_need": "You need at least four games on this shelf",
+    "nx_br_vs": "vs"
 }
