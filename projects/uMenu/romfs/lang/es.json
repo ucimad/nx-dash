@@ -377,8 +377,14 @@
     "nx_guide_lang": "es",
     "nx_g_hint": "A  Ver una pista  ·  {b}",
     "nx_g_more": "A  Siguiente pista  ·  {a} de {b}",
-    "nx_h_guide": "▲▼  Mover      L R  Sección      B  Volver",
-    "nx_h_guide_hint": "A  Pista      ▲▼  Mover      L R  Sección      B  Volver",
-    "nx_h_guide_hide": "A  Ocultar pistas      L R  Sección      B  Volver",
-    "nx_h_guide_open": "A  Abrir la guía de este juego"
+    "nx_h_guide": "▲▼  Mover      L R  Sección      Y  Actualizar      B  Volver",
+    "nx_h_guide_hint": "A  Pista      ▲▼  Mover      L R  Sección      Y  Actualizar      B  Volver",
+    "nx_h_guide_hide": "A  Ocultar pistas      L R  Sección      Y  Actualizar      B  Volver",
+    "nx_h_guide_open": "A  Abrir la guía de este juego",
+    "nx_g_sync_backup": "De tu último backup",
+    "nx_g_sync_now": "Partida leída recién",
+    "nx_g_sync_min": "Partida leída hace {n} min",
+    "nx_g_sync_hours": "Partida leída hace {n} h",
+    "nx_g_sync_days": "Partida leída hace {n} d",
+    "nx_g_sync_locked": "Cerrá el juego para leer tu partida"
 }

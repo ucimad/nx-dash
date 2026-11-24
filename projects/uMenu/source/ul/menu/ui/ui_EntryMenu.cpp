@@ -2485,32 +2485,408 @@ namespace ul::menu::ui {
 
     }
 
+    // ---- Guide progress: read the game's own save and work out what's done ----
+
+    namespace {
+
+        std::string Trim(const std::string &s) {
+            const auto a = s.find_first_not_of(" \t");
+            if(a == std::string::npos) {
+                return "";
+            }
+            const auto b = s.find_last_not_of(" \t");
+            return s.substr(a, b - a + 1);
+        }
+
+        double JsonNum(const util::JSON &v) {
+            if(v.is_boolean()) {
+                return v.get<bool>() ? 1.0 : 0.0;
+            }
+            if(v.is_number()) {
+                return v.get<double>();
+            }
+            return 0.0;
+        }
+
+        // A list entry inside playerData, e.g. Tools.savedData[] = { Name, Data }
+        const util::JSON *FindSaved(const util::JSON &pd, const char *list, const std::string &name, const bool partial) {
+            if(!pd.contains(list) || !pd[list].is_object() || !pd[list].contains("savedData") || !pd[list]["savedData"].is_array()) {
+                return nullptr;
+            }
+            for(const auto &it : pd[list]["savedData"]) {
+                if(!it.is_object() || !it.contains("Name") || !it["Name"].is_string() || !it.contains("Data") || !it["Data"].is_object()) {
+                    continue;
+                }
+                const auto n = it["Name"].get<std::string>();
+                if(partial ? (n.find(name) != std::string::npos) : (n == name)) {
+                    return &it["Data"];
+                }
+            }
+            return nullptr;
+        }
+
+        // Terms: pd.KEY · tool.NAME · tool~PART · item.NAME · quest.NAME · count.PREFIX · hours · number
+        double EvalTerm(const util::JSON &pd, const std::string &raw) {
+            const auto t = Trim(raw);
+            if(t.empty()) {
+                return 0.0;
+            }
+            if(t == "hours") {
+                return pd.contains("playTime") ? JsonNum(pd["playTime"]) / 3600.0 : 0.0;
+            }
+            if(t == "relics") {
+                // Collected but not handed in yet
+                double n = 0.0;
+                if(pd.contains("Relics") && pd["Relics"].is_object() && pd["Relics"].contains("savedData") && pd["Relics"]["savedData"].is_array()) {
+                    for(const auto &it : pd["Relics"]["savedData"]) {
+                        if(it.is_object() && it.contains("Data") && it["Data"].is_object()) {
+                            const auto &d = it["Data"];
+                            const auto col = d.contains("IsCollected") && (JsonNum(d["IsCollected"]) > 0.0);
+                            const auto dep = d.contains("IsDeposited") && (JsonNum(d["IsDeposited"]) > 0.0);
+                            if(col && !dep) {
+                                n += 1.0;
+                            }
+                        }
+                    }
+                }
+                return n;
+            }
+            if(t.rfind("pd.", 0) == 0) {
+                const auto k = t.substr(3);
+                return pd.contains(k) ? JsonNum(pd[k]) : 0.0;
+            }
+            if((t.rfind("tool.", 0) == 0) || (t.rfind("tool~", 0) == 0)) {
+                const auto d = FindSaved(pd, "Tools", t.substr(5), t[4] == '~');
+                return ((d != nullptr) && d->contains("IsUnlocked")) ? JsonNum((*d)["IsUnlocked"]) : 0.0;
+            }
+            if(t.rfind("item.", 0) == 0) {
+                const auto d = FindSaved(pd, "Collectables", t.substr(5), false);
+                return ((d != nullptr) && d->contains("Amount")) ? JsonNum((*d)["Amount"]) : 0.0;
+            }
+            if(t.rfind("quest.", 0) == 0) {
+                const auto d = FindSaved(pd, "QuestCompletionData", t.substr(6), false);
+                return ((d != nullptr) && d->contains("IsCompleted")) ? JsonNum((*d)["IsCompleted"]) : 0.0;
+            }
+            if(t.rfind("count.", 0) == 0) {
+                const auto p = t.substr(6);
+                double n = 0.0;
+                for(auto it = pd.begin(); it != pd.end(); ++it) {
+                    if((it.key().rfind(p, 0) == 0) && (JsonNum(it.value()) > 0.0)) {
+                        n += 1.0;
+                    }
+                }
+                return n;
+            }
+            char *end = nullptr;
+            const auto v = strtod(t.c_str(), &end);
+            return ((end != nullptr) && (*end == '\0')) ? v : 0.0;
+        }
+
+        // a + b - c * 2 (left to right, no precedence needed for our uses)
+        double EvalExpr(const util::JSON &pd, const std::string &e) {
+            double acc = 0.0;
+            char op = '+';
+            std::string cur;
+            const auto apply = [&]() {
+                const auto v = EvalTerm(pd, cur);
+                switch(op) {
+                    case '+': acc += v; break;
+                    case '-': acc -= v; break;
+                    case '*': acc *= v; break;
+                }
+                cur.clear();
+            };
+            for(size_t i = 0; i < e.length(); i++) {
+                const auto c = e[i];
+                // A '-' inside a key (pd.Some-Key) is unlikely; only treat spaced minus as an operator
+                const auto is_op = (c == '+') || (c == '*') || ((c == '-') && (i > 0) && (e[i - 1] == ' '));
+                if(is_op) {
+                    apply();
+                    op = c;
+                }
+                else {
+                    cur += c;
+                }
+            }
+            apply();
+            return acc;
+        }
+
+        // cond && cond, each: [!]expr [>= == <= > < N]
+        bool EvalAnd(const util::JSON &pd, const std::string &cond) {
+            size_t start = 0;
+            while(start <= cond.length()) {
+                auto amp = cond.find("&&", start);
+                if(amp == std::string::npos) {
+                    amp = cond.length();
+                }
+                auto part = Trim(cond.substr(start, amp - start));
+                start = amp + 2;
+                if(part.empty()) {
+                    continue;
+                }
+                auto neg = false;
+                if(part[0] == '!') {
+                    neg = true;
+                    part = Trim(part.substr(1));
+                }
+                bool ok;
+                static const char *Ops[] = { ">=", "<=", "==", ">", "<" };
+                size_t op_pos = std::string::npos;
+                std::string op;
+                for(const auto o : Ops) {
+                    const auto p = part.find(o);
+                    if(p != std::string::npos) {
+                        op_pos = p;
+                        op = o;
+                        break;
+                    }
+                }
+                if(op_pos == std::string::npos) {
+                    ok = EvalExpr(pd, part) > 0.0;
+                }
+                else {
+                    const auto l = EvalExpr(pd, part.substr(0, op_pos));
+                    const auto r = EvalExpr(pd, part.substr(op_pos + op.length()));
+                    if(op == ">=") ok = l >= r;
+                    else if(op == "<=") ok = l <= r;
+                    else if(op == "==") ok = std::abs(l - r) < 0.001;
+                    else if(op == ">") ok = l > r;
+                    else ok = l < r;
+                }
+                if(neg) {
+                    ok = !ok;
+                }
+                if(!ok) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // a || b, each side an && chain
+        bool EvalCond(const util::JSON &pd, const std::string &cond) {
+            size_t start = 0;
+            while(start <= cond.length()) {
+                auto bar = cond.find("||", start);
+                if(bar == std::string::npos) {
+                    bar = cond.length();
+                }
+                if(EvalAnd(pd, cond.substr(start, bar - start))) {
+                    return true;
+                }
+                start = bar + 2;
+            }
+            return false;
+        }
+
+        // Every {expr} inside a string
+        void CollectTemplates(const std::string &s, std::vector<std::string> &out) {
+            size_t p = 0;
+            while((p = s.find('{', p)) != std::string::npos) {
+                const auto q = s.find('}', p);
+                if(q == std::string::npos) {
+                    break;
+                }
+                out.push_back(s.substr(p + 1, q - p - 1));
+                p = q + 1;
+            }
+        }
+
+        void CollectGuideExprs(const util::JSON &g, std::vector<std::string> &exprs, std::vector<std::string> &conds) {
+            if(g.is_string()) {
+                CollectTemplates(g.get<std::string>(), exprs);
+                return;
+            }
+            if(g.is_array()) {
+                for(const auto &x : g) {
+                    CollectGuideExprs(x, exprs, conds);
+                }
+                return;
+            }
+            if(g.is_object()) {
+                for(auto it = g.begin(); it != g.end(); ++it) {
+                    if(((it.key() == "done") || (it.key() == "hide") || (it.key() == "show")) && it.value().is_string()) {
+                        conds.push_back(it.value().get<std::string>());
+                    }
+                    else if(it.key() != "scenes") {
+                        CollectGuideExprs(it.value(), exprs, conds);
+                    }
+                }
+            }
+        }
+
+        std::string GuidePath(const u64 app_id, const char *suffix) {
+            char path[FS_MAX_PATH] = {};
+            snprintf(path, sizeof(path), "sdmc:/ulaunch/nxdash_guides/%016lX%s", app_id, suffix);
+            return path;
+        }
+
+    }
+
+    bool NxGuideSync(const u64 app_id) {
+        if(app_id == 0) {
+            return false;
+        }
+        util::JSON guide;
+        if(R_FAILED(util::LoadJSONFromFile(guide, GuidePath(app_id, ".json")))) {
+            return false;
+        }
+        const auto uid = g_GlobalSettings.system_status.selected_user;
+        if(!accountUidIsValid(&uid)) {
+            return false;
+        }
+        const FsSaveDataAttribute attr = {
+            .application_id = app_id,
+            .uid = uid,
+            .system_save_data_id = 0,
+            .save_data_type = FsSaveDataType_Account,
+            .save_data_rank = FsSaveDataRank_Primary,
+            .save_data_index = 0
+        };
+        FsFileSystem fs;
+        const auto rc = fsOpenSaveDataFileSystem(&fs, FsSaveDataSpaceId_User, &attr);
+        if(R_FAILED(rc)) {
+            // Usually: the game is open and holds its save
+            UL_LOG_WARN("NX Dash guide: could not open save of 0x%016lX: %s", app_id, util::FormatResultDisplay(rc).c_str());
+            return false;
+        }
+        // Read every slot (user1..user4.dat) and keep the one with the most play time
+        util::JSON best;
+        double best_time = -1.0;
+        const auto slot_fmt = guide.contains("save_slot") && guide["save_slot"].is_string() ? guide["save_slot"].get<std::string>() : std::string("/user%d.dat");
+        for(s32 i = 1; i <= 4; i++) {
+            char fpath[FS_MAX_PATH] = {};
+            snprintf(fpath, sizeof(fpath), slot_fmt.c_str(), i);
+            FsFile file;
+            if(R_FAILED(fsFsOpenFile(&fs, fpath, FsOpenMode_Read, &file))) {
+                continue;
+            }
+            s64 size = 0;
+            if(R_SUCCEEDED(fsFileGetSize(&file, &size)) && (size > 0) && (size < 16 * 1024 * 1024)) {
+                std::string buf((size_t)size, '\0');
+                u64 read = 0;
+                if(R_SUCCEEDED(fsFileRead(&file, 0, buf.data(), (u64)size, FsReadOption_None, &read)) && (read == (u64)size)) {
+                    auto j = util::JSON::parse(buf, nullptr, false);
+                    if(!j.is_discarded() && j.is_object() && j.contains("playerData") && j["playerData"].is_object()) {
+                        const auto &pd = j["playerData"];
+                        const auto t = pd.contains("playTime") ? JsonNum(pd["playTime"]) : 0.0;
+                        if(t > best_time) {
+                            best_time = t;
+                            best = std::move(j);
+                        }
+                    }
+                }
+            }
+            fsFileClose(&file);
+        }
+        fsFsClose(&fs);
+        if(best_time < 0.0) {
+            return false;
+        }
+
+        const auto &pd = best["playerData"];
+        std::vector<std::string> exprs;
+        std::vector<std::string> conds;
+        CollectGuideExprs(guide, exprs, conds);
+        util::JSON vals = util::JSON::object();
+        for(const auto &e : exprs) {
+            if(e != "bench") {
+                vals[e] = EvalExpr(pd, e);
+            }
+        }
+        for(const auto &c : conds) {
+            vals[c] = EvalCond(pd, c) ? 1.0 : 0.0;
+        }
+        util::JSON progress = util::JSON::object();
+        progress["time"] = (s64)::time(nullptr);
+        progress["scene"] = (pd.contains("respawnScene") && pd["respawnScene"].is_string()) ? pd["respawnScene"].get<std::string>() : std::string();
+        progress["v"] = vals;
+        const auto ok = util::SaveJSON(GuidePath(app_id, ".progress.json"), progress);
+        UL_LOG_INFO("NX Dash guide: synced 0x%016lX (%d values)", app_id, (s32)vals.size());
+        return ok;
+    }
+
     void EntryMenu::GuideLoad(const u64 app_id) {
         this->guide_avail = false;
         this->guide_status.clear();
         this->guide_stats.clear();
         this->guide_tabs.clear();
+        this->guide_sync_str.clear();
         if(app_id == 0) {
             return;
         }
-        char path[FS_MAX_PATH] = {};
-        snprintf(path, sizeof(path), "sdmc:/ulaunch/nxdash_guides/%016lX.json", app_id);
         util::JSON json;
-        if(R_FAILED(util::LoadJSONFromFile(json, path))) {
+        if(R_FAILED(util::LoadJSONFromFile(json, GuidePath(app_id, ".json"))) || !json.is_object()) {
             return;
         }
+        // What we last read from the save (may be missing: then templates show "?" and nothing is ticked)
+        util::JSON progress;
+        const auto has_progress = R_SUCCEEDED(util::LoadJSONFromFile(progress, GuidePath(app_id, ".progress.json"))) && progress.is_object() && progress.contains("v") && progress["v"].is_object();
+        const auto val = [&](const std::string &key, double &out) -> bool {
+            if(!has_progress || !progress["v"].contains(key)) {
+                return false;
+            }
+            out = JsonNum(progress["v"][key]);
+            return true;
+        };
+        const auto cond_true = [&](const util::JSON &o, const char *key) -> int {
+            // -1: no condition or unknown, 0: false, 1: true
+            if(!o.is_object() || !o.contains(key) || !o[key].is_string()) {
+                return -1;
+            }
+            double v = 0.0;
+            if(!val(o[key].get<std::string>(), v)) {
+                return -1;
+            }
+            return (v > 0.0) ? 1 : 0;
+        };
+        std::string bench;
+        if(has_progress && progress.contains("scene") && progress["scene"].is_string() && json.contains("scenes") && json["scenes"].is_object()) {
+            const auto scene = progress["scene"].get<std::string>();
+            size_t best_len = 0;
+            for(auto it = json["scenes"].begin(); it != json["scenes"].end(); ++it) {
+                if(it.value().is_string() && (scene.rfind(it.key(), 0) == 0) && (it.key().length() > best_len)) {
+                    best_len = it.key().length();
+                    bench = it.value().get<std::string>();
+                }
+            }
+        }
+        const auto fill = [&](std::string s) -> std::string {
+            size_t p = 0;
+            while((p = s.find('{', p)) != std::string::npos) {
+                const auto q = s.find('}', p);
+                if(q == std::string::npos) {
+                    break;
+                }
+                const auto e = s.substr(p + 1, q - p - 1);
+                std::string rep = "?";
+                double v = 0.0;
+                if(e == "bench") {
+                    if(!bench.empty()) {
+                        rep = bench;
+                    }
+                }
+                else if(val(e, v)) {
+                    rep = std::to_string((s64)std::floor(v + 0.0001));
+                }
+                s.replace(p, q - p + 1, rep);
+                p += rep.length();
+            }
+            return s;
+        };
         // No exceptions in this build: check every type before reading it
-        const auto str = [](const util::JSON &o, const char *key) -> std::string {
+        const auto str = [&](const util::JSON &o, const char *key) -> std::string {
             if(o.is_object() && o.contains(key) && o[key].is_string()) {
-                return o[key].get<std::string>();
+                return fill(o[key].get<std::string>());
             }
             return "";
         };
         auto lang = nxt::T("guide_lang");
-        if(!json.is_object() || !json.contains(lang) || !json[lang].is_object()) {
+        if(!json.contains(lang) || !json[lang].is_object()) {
             lang = "en";
         }
-        if(!json.is_object() || !json.contains(lang) || !json[lang].is_object()) {
+        if(!json.contains(lang) || !json[lang].is_object()) {
             return;
         }
         const auto &g = json[lang];
@@ -2522,7 +2898,7 @@ namespace ul::menu::ui {
                 }
                 std::vector<std::string> v;
                 for(const auto &x : st) {
-                    v.push_back(x.is_string() ? x.get<std::string>() : "");
+                    v.push_back(x.is_string() ? fill(x.get<std::string>()) : "");
                 }
                 v.resize(3);
                 this->guide_stats.push_back(v);
@@ -2533,10 +2909,20 @@ namespace ul::menu::ui {
         }
         if(g.contains("tabs") && g["tabs"].is_array()) {
             for(const auto &t : g["tabs"]) {
+                if(cond_true(t, "show") == 0) {
+                    continue;
+                }
                 GuideTab tab;
                 tab.title = str(t, "title");
+                const auto is_path = t.is_object() && t.contains("path") && t["path"].is_boolean() && t["path"].get<bool>();
+                const auto sink_done = t.is_object() && t.contains("sink_done") && t["sink_done"].is_boolean() && t["sink_done"].get<bool>();
+                std::vector<GuideRow> done_rows;
+                auto here_set = false;
                 if(t.is_object() && t.contains("rows") && t["rows"].is_array()) {
                     for(const auto &r : t["rows"]) {
+                        if(cond_true(r, "hide") == 1) {
+                            continue;
+                        }
                         GuideRow row;
                         row.text = str(r, "text");
                         row.sub = str(r, "sub");
@@ -2545,18 +2931,58 @@ namespace ul::menu::ui {
                         if(r.is_object() && r.contains("hints") && r["hints"].is_array()) {
                             for(const auto &h : r["hints"]) {
                                 if(h.is_string()) {
-                                    row.hints.push_back(h.get<std::string>());
+                                    row.hints.push_back(fill(h.get<std::string>()));
                                 }
                             }
                         }
-                        if(!row.text.empty()) {
+                        if(row.text.empty()) {
+                            continue;
+                        }
+                        const auto done = cond_true(r, "done");
+                        if(done == 1) {
+                            row.mark = "done";
+                        }
+                        else if(done == 0) {
+                            row.mark.clear();
+                            // On the path, the first step you haven't done is where you are
+                            if(is_path && !here_set) {
+                                row.mark = "here";
+                                here_set = true;
+                            }
+                        }
+                        if(sink_done && (row.mark == "done")) {
+                            done_rows.push_back(row);
+                        }
+                        else {
                             tab.rows.push_back(row);
                         }
                     }
                 }
+                tab.rows.insert(tab.rows.end(), done_rows.begin(), done_rows.end());
                 if(!tab.rows.empty()) {
                     this->guide_tabs.push_back(tab);
                 }
+            }
+        }
+        // When was the save read
+        if(has_progress && progress.contains("time") && progress["time"].is_number()) {
+            const auto then = (s64)JsonNum(progress["time"]);
+            const auto now = (s64)::time(nullptr);
+            const auto diff = now - then;
+            if(then <= 0) {
+                this->guide_sync_str = nxt::T("g_sync_backup");
+            }
+            else if(diff < 90) {
+                this->guide_sync_str = nxt::T("g_sync_now");
+            }
+            else if(diff < 3600) {
+                this->guide_sync_str = nxt::Sub(nxt::T("g_sync_min"), "n", std::to_string(diff / 60));
+            }
+            else if(diff < 86400) {
+                this->guide_sync_str = nxt::Sub(nxt::T("g_sync_hours"), "n", std::to_string(diff / 3600));
+            }
+            else {
+                this->guide_sync_str = nxt::Sub(nxt::T("g_sync_days"), "n", std::to_string(std::max<s64>(1, diff / 86400)));
             }
         }
         this->guide_avail = !this->guide_tabs.empty();
@@ -2626,18 +3052,61 @@ namespace ul::menu::ui {
         this->guide_built_tab = this->guide_tab;
     }
 
+    void EntryMenu::GuideRefresh(const bool keep_place) {
+        const auto app_id = g_GlobalSettings.system_status.suspended_app_id;
+        this->guide_sync_failed = !NxGuideSync(app_id);
+        const auto tab = this->guide_tab;
+        const auto sel = this->guide_sel;
+        this->GuideLoad(app_id);
+        if(keep_place && this->guide_avail) {
+            this->GuideFreeTextures();
+            this->guide_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("guide"));
+            const auto line = this->guide_sync_failed ? nxt::T("g_sync_locked") : this->guide_sync_str;
+            if(!line.empty()) {
+                this->guide_game_tex = Text(pu::ui::DefaultFontSize::Small, line);
+            }
+            if(!this->guide_status.empty()) {
+                this->guide_status_tex = Text(pu::ui::DefaultFontSize::Small, this->guide_status);
+            }
+            this->guide_lr_tex = Text(pu::ui::DefaultFontSize::Small, "L  R");
+            for(const auto &st : this->guide_stats) {
+                this->guide_stat_texs.push_back(Text(pu::ui::DefaultFontSize::Large, st.at(0)));
+                this->guide_stat_texs.push_back(st.at(1).empty() ? nullptr : Text(pu::ui::DefaultFontSize::Small, st.at(1)));
+                this->guide_stat_texs.push_back(st.at(2).empty() ? nullptr : Text(pu::ui::DefaultFontSize::Small, st.at(2)));
+            }
+            for(const auto &t : this->guide_tabs) {
+                this->guide_tab_texs.push_back(Text(pu::ui::DefaultFontSize::Medium, t.title));
+            }
+            this->guide_tab = std::clamp(tab, 0, (s32)this->guide_tabs.size() - 1);
+            this->guide_sel = sel;
+            this->guide_init = false;
+            this->GuideBuildRows();
+            this->guide_sel = std::clamp(sel, 0, std::max(0, (s32)this->guide_row_texs.size() - 1));
+            this->sheet_hint_str.clear();
+        }
+        else if(keep_place) {
+            // The guide file went away: back to the panel
+            this->sheet_guide_open = false;
+        }
+    }
+
     void EntryMenu::GuideOpen() {
+        if(!this->guide_avail) {
+            return;
+        }
+        this->GuideRefresh(false);
         if(!this->guide_avail) {
             return;
         }
         this->GuideFreeTextures();
         this->guide_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("guide"));
         {
-            std::string title;
-            std::string meta;
-            this->DescribeSuspended(title, meta);
-            if(!title.empty()) {
-                this->guide_game_tex = Text(pu::ui::DefaultFontSize::Small, title);
+            std::string line = this->guide_sync_str;
+            if(this->guide_sync_failed) {
+                line = nxt::T("g_sync_locked");
+            }
+            if(!line.empty()) {
+                this->guide_game_tex = Text(pu::ui::DefaultFontSize::Small, line);
             }
         }
         if(!this->guide_status.empty()) {
@@ -2698,6 +3167,12 @@ namespace ul::menu::ui {
             this->sheet_guide_open = false;
             this->sheet_hint_str.clear();
             this->NxSfx(1);
+            return;
+        }
+        if(keys_down & HidNpadButton_Y) {
+            this->GuideRefresh(true);
+            this->NxSfx(this->guide_sync_failed ? 1 : 2);
+            this->Haptic(0.25f, 160.0f, 0.03);
             return;
         }
         const auto rows = (s32)this->guide_row_texs.size();

@@ -10,6 +10,9 @@
 
 namespace ul::menu::ui {
 
+    // Reads the game's save and stores what the guide needs (sdmc:/ulaunch/nxdash_guides/<APPID>.progress.json)
+    bool NxGuideSync(const u64 app_id);
+
     class EntryMenu : public pu::ui::elm::Element {
         public:
             enum class SwipeMode {
@@ -512,6 +515,8 @@ namespace ul::menu::ui {
             std::vector<std::vector<std::string>> guide_stats;
             std::vector<GuideTab> guide_tabs;
             bool sheet_guide_open = false;
+            bool guide_sync_failed = false;
+            std::string guide_sync_str;
             s32 guide_tab = 0;
             s32 guide_sel = 0;
             s32 guide_built_tab = -1;
@@ -548,6 +553,7 @@ namespace ul::menu::ui {
             void GuideFreeRows();
             void GuideBuildRows();
             void GuideOpen();
+            void GuideRefresh(const bool keep_place);
             void GuideSetTab(const s32 tab);
             void GuideActivate();
             void GuideInput(const u64 keys_down);

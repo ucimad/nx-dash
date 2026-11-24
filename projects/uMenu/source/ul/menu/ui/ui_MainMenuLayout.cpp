@@ -1251,8 +1251,11 @@ namespace ul::menu::ui {
             i++;
         }
 
+        const auto closed_app_id = g_GlobalSettings.system_status.suspended_app_id;
         UL_RC_ASSERT(smi::TerminateApplication());
         session::Clear();
+        // The game no longer holds its save: refresh its guide progress (no-op without a guide)
+        NxGuideSync(closed_app_id);
 
         if(i < entries.size()) {
             // We need to reload the application record since its kind/type changed after closing it

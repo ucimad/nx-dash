@@ -377,8 +377,14 @@
     "nx_guide_lang": "en",
     "nx_g_hint": "A  Show a hint  ·  {b}",
     "nx_g_more": "A  Next hint  ·  {a} of {b}",
-    "nx_h_guide": "▲▼  Move      L R  Section      B  Back",
-    "nx_h_guide_hint": "A  Hint      ▲▼  Move      L R  Section      B  Back",
-    "nx_h_guide_hide": "A  Hide hints      L R  Section      B  Back",
-    "nx_h_guide_open": "A  Open the guide for this game"
+    "nx_h_guide": "▲▼  Move      L R  Section      Y  Update      B  Back",
+    "nx_h_guide_hint": "A  Hint      ▲▼  Move      L R  Section      Y  Update      B  Back",
+    "nx_h_guide_hide": "A  Hide hints      L R  Section      Y  Update      B  Back",
+    "nx_h_guide_open": "A  Open the guide for this game",
+    "nx_g_sync_backup": "From your last backup",
+    "nx_g_sync_now": "Save read just now",
+    "nx_g_sync_min": "Save read {n} min ago",
+    "nx_g_sync_hours": "Save read {n} h ago",
+    "nx_g_sync_days": "Save read {n} d ago",
+    "nx_g_sync_locked": "Close the game to read your save"
 }
