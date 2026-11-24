@@ -1244,6 +1244,17 @@ namespace ul::menu::ui {
         if(idx == this->shelf_cat) {
             return;
         }
+        {
+            // Keep an unwrapped position so the tab row can roll the short way round
+            auto d = idx - this->shelf_cat;
+            if(d > n / 2) {
+                d -= n;
+            }
+            else if(d < -(n - 1) / 2) {
+                d += n;
+            }
+            this->tab_u += d;
+        }
 
         // Remember where we were on this shelf
         const auto nv = (s32)this->shelf_valid.size();
@@ -2037,58 +2048,77 @@ namespace ul::menu::ui {
         if(this->shelf_cats.size() > 1) {
             const auto font = pu::ui::GetDefaultFont(pu::ui::DefaultFontSize::Medium);
             std::vector<s32> widths;
-            s32 total = 0;
-            s32 cur_left = 0;
-            s32 cur_right = 0;
             for(u32 i = 0; i < this->shelf_cats.size(); i++) {
                 auto &tex = this->shelf_tab_texts.at(i);
                 if(tex == nullptr) {
                     tex = pu::ui::render::RenderText(font, this->shelf_cats.at(i).name, { 0xFF, 0xFF, 0xFF, 0xFF });
                 }
-                const auto w = pu::ui::render::GetTextureWidth(tex) + 44;
-                if((s32)i == this->shelf_cat) {
-                    cur_left = total;
-                    cur_right = total + w;
-                }
-                widths.push_back(w);
-                total += w + 14;
+                widths.push_back(pu::ui::render::GetTextureWidth(tex) + 44);
             }
-            // Bottom row, no capsule: the current shelf stays centred and the row slides under it
+            // Bottom row: only three names show, the current one in the middle and its neighbours
+            // fading out toward the edges. The row loops, so the neighbours always exist.
+            const auto n = (s32)this->shelf_cats.size();
             const auto mid = (double)x + area_w / 2.0;
-            const auto want = mid - (double)(cur_left + (cur_right - cur_left) / 2);
-            if(!this->tab_off_init) {
-                this->tab_off_init = true;
-                this->tab_off = want;
+            if(!this->tab_roll_init) {
+                this->tab_roll_init = true;
+                this->tab_roll = (double)this->tab_u;
             }
-            this->tab_off = this->FxApproach(this->tab_off, want, 0.24);
-            s32 tx = (s32)this->tab_off;
+            this->tab_roll = this->FxApproach(this->tab_roll, (double)this->tab_u, 0.24);
             const auto th = 50;
             const auto ty = y + (s32)area_h - th - 24;
+            const double slot = 340.0;
             {
-                // A thin underline that slides between shelves
-                const auto hl_x = (double)(tx + cur_left);
-                const auto hl_w = (double)(cur_right - cur_left);
+                // Underline under the middle name
+                const auto cur_w = (double)widths.at(this->shelf_cat) - 44.0;
                 if(!this->tab_hl_init) {
                     this->tab_hl_init = true;
-                    this->tab_hl_x = hl_x;
-                    this->tab_hl_w = hl_w;
+                    this->tab_hl_w = cur_w;
                 }
-                this->tab_hl_x = this->FxApproach(this->tab_hl_x, hl_x, 0.26);
-                this->tab_hl_w = this->FxApproach(this->tab_hl_w, hl_w, 0.26);
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, 0xE6 }, (s32)this->tab_hl_x + 22, ty + th - 4, (s32)this->tab_hl_w - 44, 3, 1);
+                this->tab_hl_w = this->FxApproach(this->tab_hl_w, cur_w, 0.26);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, 0xE6 }, (s32)(mid - this->tab_hl_w / 2.0), ty + th - 4, (s32)this->tab_hl_w, 3, 1);
             }
-            for(u32 i = 0; i < this->shelf_cats.size(); i++) {
-                const auto w = widths.at(i);
-                const auto is_cur = (s32)i == this->shelf_cat;
-                if((tx + w > x) && (tx < x + (s32)area_w)) {
-                    auto tex = this->shelf_tab_texts.at(i);
-                    const auto tth = pu::ui::render::GetTextureHeight(tex);
-                    const auto dist = std::abs((double)(tx + w / 2) - mid);
-                    const auto edge = std::clamp(1.0 - (dist - 500.0) / 360.0, 0.0, 1.0);
-                    drawer->RenderTexture(tex, tx + 22, ty + (th - tth) / 2, pu::ui::render::TextureRenderOptions((u8)((is_cur ? 255.0 : 120.0) * edge), {}, {}, {}, {}, {}));
-                    this->shelf_tab_hits.push_back({ (s32)i, tx, ty, w, th });
+            const auto base = (s64)std::floor(this->tab_roll + 0.5);
+            for(s64 k = -2; k <= 2; k++) {
+                const auto j = base + k;
+                const auto p = (double)j - this->tab_roll;
+                const auto q = std::abs(p);
+                if(q > 1.6) {
+                    continue;
                 }
-                tx += w + 14;
+                if((n == 2) && (j - this->tab_u == -1)) {
+                    // Two shelves: show the other one only once, on the right
+                    continue;
+                }
+                const auto idx = (s32)((((this->shelf_cat + (j - this->tab_u)) % n) + n) % n);
+                auto tex = this->shelf_tab_texts.at(idx);
+                const auto tw = pu::ui::render::GetTextureWidth(tex);
+                const auto tth = pu::ui::render::GetTextureHeight(tex);
+                const auto cx = mid + p * slot;
+                const auto lx = (s32)(cx - (double)tw / 2.0);
+                const auto ly = ty + (th - tth) / 2;
+                // Toward the middle stays readable, the outer side melts away
+                const auto a_in = (q <= 1.0) ? (255.0 - 105.0 * q) : std::max(0.0, 150.0 * (1.0 - (q - 1.0) / 0.6));
+                const auto a_out = (q <= 1.0) ? (255.0 * (1.0 - q)) : 0.0;
+                if(q < 0.02) {
+                    drawer->RenderTexture(tex, lx, ly, pu::ui::render::TextureRenderOptions(255, {}, {}, {}, {}, {}));
+                }
+                else {
+                    constexpr s32 SliceW = 6;
+                    for(s32 sx = 0; sx < tw; sx += SliceW) {
+                        const auto sw = std::min(SliceW, tw - sx);
+                        const auto t = ((double)sx + (double)sw / 2.0) / (double)tw;
+                        // t runs left to right; the outer side is left for names left of centre
+                        const auto toward_out = (p < 0.0) ? (1.0 - t) : t;
+                        const auto al = a_in + (a_out - a_in) * toward_out;
+                        if(al < 1.0) {
+                            continue;
+                        }
+                        drawer->RenderTexture(tex, lx + sx, ly, pu::ui::render::TextureRenderOptions((u8)std::clamp(al, 0.0, 255.0), sw, tth, {}, sx, 0));
+                    }
+                }
+                if(q < 1.2) {
+                    this->shelf_tab_hits.push_back({ this->shelf_cat + (s32)(j - this->tab_u), lx - 22, ty, tw + 44, th });
+                }
             }
         }
 
