@@ -2066,7 +2066,7 @@ namespace ul::menu::ui {
             {
                 // A light spring: the row overshoots a touch and settles
                 const auto tg = (double)this->tab_u;
-                this->tab_vel = (this->tab_vel + (tg - this->tab_roll) * 0.18) * 0.62;
+                this->tab_vel = (this->tab_vel + (tg - this->tab_roll) * 0.11) * 0.70;
                 this->tab_roll += this->tab_vel;
                 if((std::abs(tg - this->tab_roll) < 0.001) && (std::abs(this->tab_vel) < 0.001)) {
                     this->tab_roll = tg;
