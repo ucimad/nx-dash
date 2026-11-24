@@ -186,6 +186,7 @@ namespace ul::menu::ui {
             bool tab_off_init = false;
             bool tab_roll_init = false;
             double tab_roll = 0.0;
+            double tab_vel = 0.0;
             s64 tab_u = 0;
             double tab_off = 0.0;
             double tab_hl_x = 0.0;

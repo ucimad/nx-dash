@@ -2063,7 +2063,16 @@ namespace ul::menu::ui {
                 this->tab_roll_init = true;
                 this->tab_roll = (double)this->tab_u;
             }
-            this->tab_roll = this->FxApproach(this->tab_roll, (double)this->tab_u, 0.24);
+            {
+                // A light spring: the row overshoots a touch and settles
+                const auto tg = (double)this->tab_u;
+                this->tab_vel = (this->tab_vel + (tg - this->tab_roll) * 0.18) * 0.62;
+                this->tab_roll += this->tab_vel;
+                if((std::abs(tg - this->tab_roll) < 0.001) && (std::abs(this->tab_vel) < 0.001)) {
+                    this->tab_roll = tg;
+                    this->tab_vel = 0.0;
+                }
+            }
             const auto th = 50;
             const auto ty = y + (s32)area_h - th - 24;
             const double slot = 340.0;
@@ -2075,7 +2084,10 @@ namespace ul::menu::ui {
                     this->tab_hl_w = cur_w;
                 }
                 this->tab_hl_w = this->FxApproach(this->tab_hl_w, cur_w, 0.26);
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, 0xE6 }, (s32)(mid - this->tab_hl_w / 2.0), ty + th - 4, (s32)this->tab_hl_w, 3, 1);
+                // It shrinks while the row moves and grows back under the new name
+                const auto mv = std::min(1.0, std::abs((double)this->tab_u - this->tab_roll) * 2.2);
+                const auto uw = this->tab_hl_w * (1.0 - 0.7 * mv);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, (u8)(230.0 * (1.0 - 0.5 * mv)) }, (s32)(mid - uw / 2.0), ty + th - 4, (s32)uw, 3, 1);
             }
             const auto base = (s64)std::floor(this->tab_roll + 0.5);
             for(s64 k = -2; k <= 2; k++) {
@@ -2095,7 +2107,8 @@ namespace ul::menu::ui {
                 const auto tth = pu::ui::render::GetTextureHeight(tex);
                 const auto cx = mid + p * slot;
                 const auto lx = (s32)(cx - (double)tw / 2.0);
-                const auto ly = ty + (th - tth) / 2;
+                // Names coming in from outside the three rise into place; leaving ones sink away
+                const auto ly = ty + (th - tth) / 2 + (s32)(12.0 * std::clamp((q - 1.0) / 0.6, 0.0, 1.0));
                 // Toward the middle stays readable, the outer side melts away
                 const auto a_in = (q <= 1.0) ? (255.0 - 105.0 * q) : std::max(0.0, 150.0 * (1.0 - (q - 1.0) / 0.6));
                 const auto a_out = (q <= 1.0) ? (255.0 * (1.0 - q)) : 0.0;
