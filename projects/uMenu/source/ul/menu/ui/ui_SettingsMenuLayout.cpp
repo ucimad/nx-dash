@@ -1176,4 +1176,20 @@ namespace ul::menu::ui {
         }
     }
 
+
+    void SettingsMenuLayout::OpenSubmenu(const SettingMenu menu, const SettingSubmenu submenu) {
+        this->cur_menu = menu;
+        for(auto &setting_submenu: g_SettingSubmenuEntries) {
+            if(setting_submenu.submenu == submenu) {
+                if(setting_submenu.init_cb != nullptr) {
+                    setting_submenu.init_cb();
+                }
+                break;
+            }
+        }
+        this->cur_submenu = submenu;
+        this->inputs_changed = true;
+        this->Reload(true);
+    }
+
 }

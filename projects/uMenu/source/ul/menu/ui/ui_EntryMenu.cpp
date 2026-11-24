@@ -2156,12 +2156,290 @@ namespace ul::menu::ui {
         pu::ui::render::DeleteTexture(this->sheet_time);
         this->sheet_time = nullptr;
         Free(this->sheet_cont_tex);
+        Free(this->sheet_bt_title_tex);
+        Free(this->sheet_bt_pair_tex);
+        Free(this->sheet_bt_none_tex);
+        for(auto &tex : this->sheet_bt_st_texs) {
+            Free(tex);
+        }
+        for(auto &tex : this->sheet_bt_dev_texs) {
+            Free(tex);
+        }
+        this->sheet_bt_dev_texs.clear();
+        this->sheet_bt_devs_sig.clear();
         Free(this->sheet_other_label);
         Free(this->sheet_icon_label);
         this->sheet_icon_label_str.clear();
         this->sheet_hint_str.clear();
         this->sheet_other_icons.clear();
         this->sheet_hint = nullptr;
+    }
+
+
+    // ---- Bluetooth: one request at a time, and the menu always says how it went ----
+
+    void EntryMenu::BtRequest(const BtmAudioDevice &dev, const bool connect) {
+        if(this->bt_pending) {
+            return;
+        }
+        this->bt_failed_t = 0.0;
+        Result rc;
+        if(connect) {
+            // Only one audio device at a time: let go of the current one first
+            const auto cur = bt::GetConnectedAudioDevice();
+            if((cur.name[0] != '\0') && !bt::AudioDevicesEqual(cur, dev)) {
+                bt::DisconnectAudioDevice(cur);
+            }
+            rc = bt::ConnectAudioDevice(dev);
+        }
+        else {
+            rc = bt::DisconnectAudioDevice(dev);
+        }
+        if(R_FAILED(rc)) {
+            UL_LOG_WARN("[nxdash] Bluetooth %s failed: %s", connect ? "connect" : "disconnect", util::FormatResultDisplay(rc).c_str());
+            if(connect) {
+                this->bt_failed_addr = dev.addr;
+                this->bt_failed_t = this->fx_time + 8.0;
+            }
+            this->NxSfx(1);
+            this->Haptic(0.7f, 110.0f, 0.05);
+            return;
+        }
+        this->bt_pending = true;
+        this->bt_pending_connect = connect;
+        this->bt_pending_addr = dev.addr;
+        this->bt_pending_name = std::string(dev.name, strnlen(dev.name, sizeof(dev.name)));
+        this->bt_pending_t = this->fx_time + (connect ? 15.0 : 6.0);
+        this->NxSfx(0);
+        this->Haptic(0.3f, 200.0f, 0.02);
+    }
+
+    void EntryMenu::BtUpdate() {
+        if(!this->bt_pending) {
+            return;
+        }
+        const auto cur = bt::GetConnectedAudioDevice();
+        const auto is_connected = (cur.name[0] != '\0') && bt::AudioDeviceAddressesEqual(cur.addr, this->bt_pending_addr);
+        if(this->bt_pending_connect ? is_connected : !is_connected) {
+            this->bt_pending = false;
+            g_MenuApplication->ShowNotification(nxt::Sub(nxt::T(this->bt_pending_connect ? "bt_ok" : "bt_off"), "name", this->bt_pending_name), 1800);
+            this->NxSfx(2);
+            this->Haptic(0.5f, 180.0f, 0.04);
+            return;
+        }
+        if(this->fx_time > this->bt_pending_t) {
+            // Nothing happened in time: say so instead of waiting forever
+            this->bt_pending = false;
+            if(this->bt_pending_connect) {
+                this->bt_failed_addr = this->bt_pending_addr;
+                this->bt_failed_t = this->fx_time + 8.0;
+            }
+            this->NxSfx(1);
+            this->Haptic(0.7f, 110.0f, 0.05);
+        }
+    }
+
+    EntryMenu::BtState EntryMenu::BtStateFor(const BtmAudioDevice &dev) {
+        if(this->bt_pending && bt::AudioDeviceAddressesEqual(this->bt_pending_addr, dev.addr)) {
+            return this->bt_pending_connect ? BtState::Connecting : BtState::Disconnecting;
+        }
+        const auto cur = bt::GetConnectedAudioDevice();
+        if((cur.name[0] != '\0') && bt::AudioDevicesEqual(cur, dev)) {
+            return BtState::Connected;
+        }
+        if((this->fx_time < this->bt_failed_t) && bt::AudioDeviceAddressesEqual(this->bt_failed_addr, dev.addr)) {
+            return BtState::Failed;
+        }
+        return BtState::Idle;
+    }
+
+    void EntryMenu::SheetBtOpen() {
+        this->sheet_bt_devs = bt::ListPairedAudioDevices();
+        this->sheet_bt_sel = 0;
+        const auto cur = bt::GetConnectedAudioDevice();
+        for(u32 i = 0; i < this->sheet_bt_devs.size(); i++) {
+            if((cur.name[0] != '\0') && bt::AudioDevicesEqual(cur, this->sheet_bt_devs.at(i))) {
+                this->sheet_bt_sel = (s32)i;
+            }
+        }
+        this->sheet_btl_init = false;
+        this->sheet_bt_open = true;
+        this->NxSfx(2);
+    }
+
+    void EntryMenu::SheetBtActivate() {
+        const auto n = (s32)this->sheet_bt_devs.size();
+        if(this->sheet_bt_sel >= n) {
+            // Pairing happens in Settings, where the search lives
+            this->SheetExecute(static_cast<u32>(SheetAction::BluetoothPair));
+            return;
+        }
+        const auto &dev = this->sheet_bt_devs.at(this->sheet_bt_sel);
+        const auto state = this->BtStateFor(dev);
+        if((state == BtState::Connecting) || (state == BtState::Disconnecting)) {
+            return;
+        }
+        this->BtRequest(dev, state != BtState::Connected);
+    }
+
+    void EntryMenu::SheetBtInput(const u64 keys_down) {
+        const auto rows = (s32)this->sheet_bt_devs.size() + 1;
+        if(keys_down & HidNpadButton_B) {
+            this->sheet_bt_open = false;
+            this->sheet_lens_init = false;
+            this->NxSfx(0);
+        }
+        else if(keys_down & (HidNpadButton_AnyUp | HidNpadButton_AnyDown)) {
+            const auto next = std::clamp(this->sheet_bt_sel + ((keys_down & HidNpadButton_AnyUp) ? -1 : 1), 0, rows - 1);
+            if(next != this->sheet_bt_sel) {
+                this->sheet_bt_sel = next;
+                this->NxSfx(0);
+                this->Haptic(0.18f, 160.0f, 0.015);
+            }
+            else {
+                this->NxSfx(1);
+                this->Haptic(0.3f, 120.0f, 0.03);
+            }
+        }
+        else if(keys_down & HidNpadButton_A) {
+            this->SheetBtActivate();
+        }
+    }
+
+    void EntryMenu::SheetRenderBluetooth(pu::ui::render::Renderer::Ref &drawer, const s32 ix, const s32 iw, const s32 y0, const s32 hint_y, const double a, const std::function<u8(double)> &ca) {
+        // The list follows the console: pairing in Settings shows up here on return
+        {
+            const auto devs = bt::ListPairedAudioDevices();
+            std::string sig;
+            for(const auto &dev : devs) {
+                sig += std::string(dev.name, strnlen(dev.name, sizeof(dev.name))) + "\n";
+            }
+            if((sig != this->sheet_bt_devs_sig) || (this->sheet_bt_dev_texs.size() != devs.size())) {
+                this->sheet_bt_devs_sig = sig;
+                this->sheet_bt_devs = devs;
+                for(auto &tex : this->sheet_bt_dev_texs) {
+                    Free(tex);
+                }
+                this->sheet_bt_dev_texs.clear();
+                for(const auto &dev : devs) {
+                    const auto name = std::string(dev.name, strnlen(dev.name, sizeof(dev.name)));
+                    this->sheet_bt_dev_texs.push_back(Text(pu::ui::DefaultFontSize::MediumLarge, name.empty() ? nxt::T("headphones") : name));
+                }
+                this->sheet_bt_sel = std::min(this->sheet_bt_sel, (s32)devs.size());
+            }
+        }
+        if(this->sheet_bt_title_tex == nullptr) {
+            this->sheet_bt_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("bt_title"));
+            this->sheet_bt_pair_tex = Text(pu::ui::DefaultFontSize::MediumLarge, "+   " + nxt::T("bt_pair_new"));
+            this->sheet_bt_none_tex = Text(pu::ui::DefaultFontSize::Small, nxt::T("bt_none"));
+            this->sheet_bt_st_texs[0] = Text(pu::ui::DefaultFontSize::Small, nxt::T("bt_st_on"));
+            this->sheet_bt_st_texs[1] = Text(pu::ui::DefaultFontSize::Small, nxt::T("bt_st_connecting"));
+            this->sheet_bt_st_texs[2] = Text(pu::ui::DefaultFontSize::Small, nxt::T("bt_st_disconnecting"));
+            this->sheet_bt_st_texs[3] = Text(pu::ui::DefaultFontSize::Small, nxt::T("bt_st_failed"));
+        }
+
+        const auto n = (s32)this->sheet_bt_devs.size();
+        // Header: the glyph and what this list is
+        if(this->sheet_icons[5] != nullptr) {
+            drawer->RenderTexture(this->sheet_icons[5], ix + 4, y0 + 2, pu::ui::render::TextureRenderOptions(ca(230.0), 40, 40, {}, {}, {}));
+        }
+        Draw(drawer, this->sheet_bt_title_tex, ix + 60, y0 + 22 - TexH(this->sheet_bt_title_tex) / 2, ca(255.0));
+
+        const s32 row_h = 76;
+        s32 y = y0 + 84;
+        if(n == 0) {
+            Draw(drawer, this->sheet_bt_none_tex, ix + 4, y, ca(150.0));
+            y += TexH(this->sheet_bt_none_tex) + 24;
+        }
+        const s32 rows_y = y;
+        const auto row_top = [&](const s32 row) {
+            return rows_y + row * (row_h + 6);
+        };
+
+        // The lens
+        {
+            const auto ty = (double)row_top(this->sheet_bt_sel);
+            if(!this->sheet_btl_init) {
+                this->sheet_btl_init = true;
+                this->sheet_btl_y = ty;
+            }
+            this->sheet_btl_y = this->FxApproach(this->sheet_btl_y, ty, 0.30);
+            RenderGlass(drawer, ix - 12, (s32)this->sheet_btl_y, iw + 24, row_h, 34, a, 100);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(24.0) }, ix - 12, (s32)this->sheet_btl_y, iw + 24, row_h / 2, 34);
+        }
+
+        const auto pulse = 0.55 + 0.45 * std::sin(this->fx_time * 6.0);
+        for(s32 i = 0; i <= n; i++) {
+            const auto f = i == this->sheet_bt_sel;
+            const auto ty = row_top(i);
+            const auto mid = ty + row_h / 2;
+            const auto ta = f ? 255.0 : 140.0;
+            if(i < n) {
+                const auto state = this->BtStateFor(this->sheet_bt_devs.at(i));
+                if(this->sheet_icons[3] != nullptr) {
+                    drawer->RenderTexture(this->sheet_icons[3], ix + 6, mid - 18, pu::ui::render::TextureRenderOptions(ca(ta), 36, 36, {}, {}, {}));
+                }
+                auto name = this->sheet_bt_dev_texs.at(i);
+                RenderTextFit(drawer, name, (double)(ix + 64), mid - TexH(name) / 2, (double)(iw - 260), ca(ta), false);
+                pu::sdl2::Texture st = nullptr;
+                double sa = 220.0;
+                switch(state) {
+                    case BtState::Connected: {
+                        st = this->sheet_bt_st_texs[0];
+                        SDL_SetTextureColorMod(st, 0x5B, 0xE3, 0x8A);
+                        break;
+                    }
+                    case BtState::Connecting:
+                    case BtState::Disconnecting: {
+                        st = this->sheet_bt_st_texs[(state == BtState::Connecting) ? 1 : 2];
+                        sa = 255.0 * pulse;
+                        break;
+                    }
+                    case BtState::Failed: {
+                        st = this->sheet_bt_st_texs[3];
+                        SDL_SetTextureColorMod(st, 0xFF, 0x6B, 0x5E);
+                        break;
+                    }
+                    default: {
+                        break;
+                    }
+                }
+                if(st != nullptr) {
+                    if(state == BtState::Connected) {
+                        FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(255.0) }, ix + iw - TexW(st) - 26, mid - 6, 12, 12, 6);
+                    }
+                    Draw(drawer, st, ix + iw - TexW(st), mid - TexH(st) / 2, ca(sa));
+                }
+            }
+            else {
+                Draw(drawer, this->sheet_bt_pair_tex, ix + 10, mid - TexH(this->sheet_bt_pair_tex) / 2, ca(f ? 255.0 : 140.0));
+            }
+            this->sheet_hits.push_back({ 30 + i, ix - 12, ty, iw + 24, row_h });
+        }
+
+        // One line: what A does on this row
+        {
+            std::string hint;
+            if(this->sheet_bt_sel >= n) {
+                hint = nxt::T("h_bt_pair");
+            }
+            else {
+                const auto &dev = this->sheet_bt_devs.at(this->sheet_bt_sel);
+                switch(this->BtStateFor(dev)) {
+                    case BtState::Connected: hint = nxt::T("h_bt_disconnect"); break;
+                    case BtState::Connecting: hint = nxt::Sub(nxt::T("h_bt_wait"), "name", std::string(dev.name, strnlen(dev.name, sizeof(dev.name)))); break;
+                    case BtState::Disconnecting: hint = nxt::Sub(nxt::T("h_bt_wait"), "name", std::string(dev.name, strnlen(dev.name, sizeof(dev.name)))); break;
+                    case BtState::Failed: hint = nxt::T("h_bt_failed"); break;
+                    default: hint = nxt::T("h_bt_connect"); break;
+                }
+            }
+            if(hint != this->sheet_hint_str) {
+                this->sheet_hint_str = hint;
+                Free(this->sheet_hint);
+                this->sheet_hint = Text(pu::ui::DefaultFontSize::Small, hint);
+            }
+            RenderTextFit(drawer, this->sheet_hint, (double)ix, hint_y, (double)iw, ca(125.0), false);
+        }
     }
 
     void EntryMenu::SheetOpen() {
@@ -2209,8 +2487,8 @@ namespace ul::menu::ui {
         this->sheet_other_label = Text(pu::ui::DefaultFontSize::Small, nxt::T("other"));
         if(!this->sheet_icons_loaded) {
             this->sheet_icons_loaded = true;
-            static const char *const Names[5] = { "Play", "Album", "Library", "Headphones", "Power" };
-            for(u32 i = 0; i < 5; i++) {
+            static const char *const Names[6] = { "Play", "Album", "Library", "Headphones", "Power", "Bluetooth" };
+            for(u32 i = 0; i < 6; i++) {
                 this->sheet_icons[i] = TryFindLoadImage(std::string("ui/Main/NxDash/") + Names[i]);
             }
         }
@@ -2240,6 +2518,7 @@ namespace ul::menu::ui {
 
         this->sheet_bt_poll = 1.0;
         this->SheetRefreshBluetooth();
+        this->sheet_bt_open = false;
 
         this->sheet_zone = 0;
         this->sheet_icon_sel = 0;
@@ -2254,7 +2533,7 @@ namespace ul::menu::ui {
 
     void EntryMenu::SheetRefreshBluetooth() {
         this->sheet_bt_poll += this->fx_dt;
-        if(this->sheet_bt_poll < 1.0) {
+        if(this->sheet_bt_poll < 0.25) {
             return;
         }
         this->sheet_bt_poll = 0.0;
@@ -2301,7 +2580,8 @@ namespace ul::menu::ui {
                 this->sheet_open = false;
                 break;
             }
-            case SheetAction::PlayOther: {
+            case SheetAction::PlayOther:
+            case SheetAction::BluetoothPair: {
                 if(this->sheet_action_cb) {
                     this->sheet_action_cb(act);
                 }
@@ -2326,8 +2606,7 @@ namespace ul::menu::ui {
                     break;
                 }
                 case 2: {
-                    this->LockBluetooth();
-                    this->sheet_bt_poll = 0.4;
+                    this->SheetBtOpen();
                     break;
                 }
                 default: {
@@ -2343,6 +2622,10 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::SheetInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        if(this->sheet_bt_open && touch_pos.IsEmpty() && !this->sheet_touching) {
+            this->SheetBtInput(keys_down);
+            return;
+        }
         if(!touch_pos.IsEmpty()) {
             this->sheet_touching = true;
             this->sheet_touch_x = touch_pos.x;
@@ -2353,7 +2636,20 @@ namespace ul::menu::ui {
             this->sheet_touching = false;
             for(const auto &hit : this->sheet_hits) {
                 if((this->sheet_touch_x >= hit.x) && (this->sheet_touch_x < hit.x + hit.w) && (this->sheet_touch_y >= hit.y) && (this->sheet_touch_y < hit.y + hit.h)) {
-                    if(hit.pos == 0) {
+                    if((hit.pos >= 30) && (hit.pos < 40)) {
+                        const auto row = hit.pos - 30;
+                        if(row == this->sheet_bt_sel) {
+                            this->SheetBtActivate();
+                        }
+                        else {
+                            this->sheet_bt_sel = row;
+                            this->NxSfx(0);
+                        }
+                    }
+                    else if(this->sheet_bt_open) {
+                        // Taps on the rest of the panel do nothing while the Bluetooth list is up
+                    }
+                    else if(hit.pos == 0) {
                         this->sheet_zone = 0;
                         this->SheetActivate();
                     }
@@ -2426,6 +2722,7 @@ namespace ul::menu::ui {
 
         nxdash::g_Modal = this->IsModalOpen();
         this->HapticUpdate();
+        this->BtUpdate();
 
         // Coming back from a game with HOME: show the game sheet first
         if(!this->sheet_checked) {
@@ -2529,169 +2826,180 @@ namespace ul::menu::ui {
         RenderTextFit(drawer, this->sheet_time, (double)ix, y, (double)iw, ca(185.0), false);
         y += TexH(this->sheet_time) + 44;
 
-        // Focus targets first: the lens slides between them
-        const s32 cont_y = y;
-        const s32 cont_h = 78;
-        y += 108;
-        const s32 isz = 92;
-        const s32 igap = (iw - isz * 4) / 3;
-        const s32 icon_cy = y + isz / 2;
-        y += 160;
-        const s32 other_label_y = y;
-        const s32 card = 150;
-        const s32 card_gap = 22;
-        const s32 cards_y = y + 44;
-
-        double tx;
-        double ty;
-        double tw;
-        double th;
-        if(this->sheet_zone == 0) {
-            tx = ix - 12;
-            ty = cont_y;
-            tw = iw + 24;
-            th = cont_h;
-        }
-        else if(this->sheet_zone == 1) {
-            tx = ix + this->sheet_icon_sel * (isz + igap);
-            ty = icon_cy - isz / 2 - 6;
-            tw = isz;
-            th = isz;
+        if(this->sheet_bt_open) {
+            this->SheetRenderBluetooth(drawer, ix, iw, y, py + ph - 62, a, ca);
         }
         else {
-            tx = ix + this->sheet_other_sel * (card + card_gap);
-            ty = cards_y;
-            tw = card;
-            th = card;
-        }
-        if(!this->sheet_lens_init) {
-            this->sheet_lens_init = true;
-            this->sheet_lx = tx;
-            this->sheet_ly = ty;
-            this->sheet_lw = tw;
-            this->sheet_lh = th;
-        }
-        this->sheet_lx = this->FxApproach(this->sheet_lx, tx, 0.30);
-        this->sheet_ly = this->FxApproach(this->sheet_ly, ty, 0.30);
-        this->sheet_lw = this->FxApproach(this->sheet_lw, tw, 0.30);
-        this->sheet_lh = this->FxApproach(this->sheet_lh, th, 0.30);
-        if(this->sheet_zone != 2) {
-            const auto r = (s32)std::min(this->sheet_lh / 2.0, (this->sheet_zone == 1) ? 46.0 : 34.0);
-            if((this->sheet_zone == 1) && (g_Glow != nullptr)) {
-                drawer->RenderTexture(g_Glow, (s32)this->sheet_lx - 40, (s32)this->sheet_ly - 40, pu::ui::render::TextureRenderOptions(ca(110.0), (s32)this->sheet_lw + 80, (s32)this->sheet_lh + 80, {}, {}, {}));
-            }
-            RenderGlass(drawer, (s32)this->sheet_lx, (s32)this->sheet_ly, (s32)this->sheet_lw, (s32)this->sheet_lh, r, a, (this->sheet_zone == 1) ? 160 : 100);
-            FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(24.0) }, (s32)this->sheet_lx, (s32)this->sheet_ly, (s32)this->sheet_lw, (s32)(this->sheet_lh / 2.0), r);
-        }
+            // Focus targets first: the lens slides between them
+            const s32 cont_y = y;
+            const s32 cont_h = 78;
+            y += 108;
+            const s32 isz = 92;
+            const s32 igap = (iw - isz * 4) / 3;
+            const s32 icon_cy = y + isz / 2;
+            y += 160;
+            const s32 other_label_y = y;
+            const s32 card = 150;
+            const s32 card_gap = 22;
+            const s32 cards_y = y + 44;
 
-        // Continue: the only action spelled out
-        {
-            const auto f = this->sheet_zone == 0;
-            const auto ta = f ? 255.0 : 150.0;
-            if(this->sheet_icons[0] != nullptr) {
-                drawer->RenderTexture(this->sheet_icons[0], ix + 8, cont_y + cont_h / 2 - 18, pu::ui::render::TextureRenderOptions(ca(ta), 36, 36, {}, {}, {}));
-            }
-            Draw(drawer, this->sheet_cont_tex, ix + 64, cont_y + (cont_h - TexH(this->sheet_cont_tex)) / 2, ca(ta));
-            this->sheet_hits.push_back({ 0, ix - 12, cont_y, iw + 24, cont_h });
-        }
-
-        // Icons: the name shows only under the focused one
-        for(s32 i = 0; i < 4; i++) {
-            const auto f = (this->sheet_zone == 1) && (this->sheet_icon_sel == i);
-            const auto cx = ix + i * (isz + igap) + isz / 2;
-            const auto cy = icon_cy - (f ? 6 : 0);
-            if(!f) {
-                FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(16.0) }, cx - isz / 2, icon_cy - isz / 2, isz, isz, isz / 2);
-            }
-            auto icon = this->sheet_icons[1 + i];
-            const auto danger = (i == 3) && f;
-            if(icon != nullptr) {
-                const auto isize = f ? 52 : 46;
-                if(danger) {
-                    SDL_SetTextureColorMod(icon, 0xFF, 0x6B, 0x5E);
-                }
-                drawer->RenderTexture(icon, cx - isize / 2, cy - isize / 2, pu::ui::render::TextureRenderOptions(ca(f ? 255.0 : 130.0), isize, isize, {}, {}, {}));
-                if(danger) {
-                    SDL_SetTextureColorMod(icon, 0xFF, 0xFF, 0xFF);
-                }
-            }
-            if((i == 2) && this->sheet_bt_connected) {
-                FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(255.0) }, cx + 24, cy - 32, 14, 14, 7);
-            }
-            if(f) {
-                std::string label;
-                switch(i) {
-                    case 0: label = nxt::T("album"); break;
-                    case 1: label = nxt::T("library"); break;
-                    case 2: label = this->sheet_bt_name; break;
-                    default: label = nxt::T("close"); break;
-                }
-                if(label != this->sheet_icon_label_str) {
-                    this->sheet_icon_label_str = label;
-                    Free(this->sheet_icon_label);
-                    this->sheet_icon_label = Text(pu::ui::DefaultFontSize::Small, label);
-                }
-                if(this->sheet_icon_label != nullptr) {
-                    const auto lw = std::min(TexW(this->sheet_icon_label), iw);
-                    const auto lx = std::clamp(cx - lw / 2, ix, ix + iw - lw);
-                    if(danger) {
-                        SDL_SetTextureColorMod(this->sheet_icon_label, 0xFF, 0x6B, 0x5E);
-                    }
-                    RenderTextFit(drawer, this->sheet_icon_label, (double)lx, icon_cy + isz / 2 + 14, (double)iw, ca(240.0), false);
-                    if(danger) {
-                        SDL_SetTextureColorMod(this->sheet_icon_label, 0xFF, 0xFF, 0xFF);
-                    }
-                }
-            }
-            this->sheet_hits.push_back({ 10 + i, cx - isz / 2, icon_cy - isz / 2, isz, isz });
-        }
-
-        // Play something else
-        if(!this->sheet_other_ids.empty()) {
-            Draw(drawer, this->sheet_other_label, ix, other_label_y, ca(150.0));
-            for(s32 i = 0; i < (s32)this->sheet_other_ids.size(); i++) {
-                const auto f = (this->sheet_zone == 2) && (this->sheet_other_sel == i);
-                const auto grow = f ? 8 : 0;
-                const auto x = ix + i * (card + card_gap) - grow / 2;
-                const auto yy = cards_y - grow / 2 - (f ? 4 : 0);
-                const auto s = card + grow;
-                if(f) {
-                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(235.0) }, x - 5, yy - 5, s + 10, s + 10, 24);
-                }
-                auto icon = this->sheet_other_icons.at(i);
-                if((icon != nullptr) && (icon->Get() != nullptr)) {
-                    drawer->RenderTexture(icon->Get(), x, yy, pu::ui::render::TextureRenderOptions(ca(f ? 255.0 : 150.0), s, s, {}, {}, {}));
-                }
-                else {
-                    FillRR(drawer, { 0x2A, 0x2D, 0x38, ca(255.0) }, x, yy, s, s, 18);
-                }
-                this->sheet_hits.push_back({ 20 + i, ix + i * (card + card_gap), cards_y, card, card });
-            }
-        }
-
-        // One contextual hint
-        {
-            std::string hint;
+            double tx;
+            double ty;
+            double tw;
+            double th;
             if(this->sheet_zone == 0) {
-                hint = nxt::T("h_continue");
+                tx = ix - 12;
+                ty = cont_y;
+                tw = iw + 24;
+                th = cont_h;
             }
             else if(this->sheet_zone == 1) {
-                switch(this->sheet_icon_sel) {
-                    case 0: hint = nxt::T("h_album"); break;
-                    case 1: hint = nxt::T("h_library"); break;
-                    case 2: hint = !this->sheet_bt_paired ? nxt::T("h_bt_none") : nxt::Sub(nxt::T(this->sheet_bt_connected ? "h_bt_on" : "h_bt_off"), "name", this->sheet_bt_name); break;
-                    default: hint = nxt::T("h_close"); break;
+                tx = ix + this->sheet_icon_sel * (isz + igap);
+                ty = icon_cy - isz / 2 - 6;
+                tw = isz;
+                th = isz;
+            }
+            else {
+                tx = ix + this->sheet_other_sel * (card + card_gap);
+                ty = cards_y;
+                tw = card;
+                th = card;
+            }
+            if(!this->sheet_lens_init) {
+                this->sheet_lens_init = true;
+                this->sheet_lx = tx;
+                this->sheet_ly = ty;
+                this->sheet_lw = tw;
+                this->sheet_lh = th;
+            }
+            this->sheet_lx = this->FxApproach(this->sheet_lx, tx, 0.30);
+            this->sheet_ly = this->FxApproach(this->sheet_ly, ty, 0.30);
+            this->sheet_lw = this->FxApproach(this->sheet_lw, tw, 0.30);
+            this->sheet_lh = this->FxApproach(this->sheet_lh, th, 0.30);
+            if(this->sheet_zone != 2) {
+                const auto r = (s32)std::min(this->sheet_lh / 2.0, (this->sheet_zone == 1) ? 46.0 : 34.0);
+                if((this->sheet_zone == 1) && (g_Glow != nullptr)) {
+                    drawer->RenderTexture(g_Glow, (s32)this->sheet_lx - 40, (s32)this->sheet_ly - 40, pu::ui::render::TextureRenderOptions(ca(110.0), (s32)this->sheet_lw + 80, (s32)this->sheet_lh + 80, {}, {}, {}));
+                }
+                RenderGlass(drawer, (s32)this->sheet_lx, (s32)this->sheet_ly, (s32)this->sheet_lw, (s32)this->sheet_lh, r, a, (this->sheet_zone == 1) ? 160 : 100);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(24.0) }, (s32)this->sheet_lx, (s32)this->sheet_ly, (s32)this->sheet_lw, (s32)(this->sheet_lh / 2.0), r);
+            }
+
+            // Continue: the only action spelled out
+            {
+                const auto f = this->sheet_zone == 0;
+                const auto ta = f ? 255.0 : 150.0;
+                if(this->sheet_icons[0] != nullptr) {
+                    drawer->RenderTexture(this->sheet_icons[0], ix + 8, cont_y + cont_h / 2 - 18, pu::ui::render::TextureRenderOptions(ca(ta), 36, 36, {}, {}, {}));
+                }
+                Draw(drawer, this->sheet_cont_tex, ix + 64, cont_y + (cont_h - TexH(this->sheet_cont_tex)) / 2, ca(ta));
+                this->sheet_hits.push_back({ 0, ix - 12, cont_y, iw + 24, cont_h });
+            }
+
+            // Icons: the name shows only under the focused one
+            for(s32 i = 0; i < 4; i++) {
+                const auto f = (this->sheet_zone == 1) && (this->sheet_icon_sel == i);
+                const auto cx = ix + i * (isz + igap) + isz / 2;
+                const auto cy = icon_cy - (f ? 6 : 0);
+                if(!f) {
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(16.0) }, cx - isz / 2, icon_cy - isz / 2, isz, isz, isz / 2);
+                }
+                static const s32 IconMap[4] = { 1, 2, 5, 4 };
+                auto icon = this->sheet_icons[IconMap[i]];
+                const auto danger = (i == 3) && f;
+                if(icon != nullptr) {
+                    const auto isize = f ? 52 : 46;
+                    if(danger) {
+                        SDL_SetTextureColorMod(icon, 0xFF, 0x6B, 0x5E);
+                    }
+                    drawer->RenderTexture(icon, cx - isize / 2, cy - isize / 2, pu::ui::render::TextureRenderOptions(ca(f ? 255.0 : 130.0), isize, isize, {}, {}, {}));
+                    if(danger) {
+                        SDL_SetTextureColorMod(icon, 0xFF, 0xFF, 0xFF);
+                    }
+                }
+                if((i == 2) && this->sheet_bt_connected) {
+                    FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(255.0) }, cx + 24, cy - 32, 14, 14, 7);
+                }
+                if((i == 2) && this->bt_pending) {
+                    // Working on it: a soft breathing ring
+                    const auto p = 0.5 + 0.5 * std::sin(this->fx_time * 6.0);
+                    FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(40.0 + 60.0 * p) }, cx - isz / 2 - 6, icon_cy - isz / 2 - 6, isz + 12, isz + 12, isz / 2 + 6);
+                }
+                if(f) {
+                    std::string label;
+                    switch(i) {
+                        case 0: label = nxt::T("album"); break;
+                        case 1: label = nxt::T("library"); break;
+                        case 2: label = this->sheet_bt_connected ? this->sheet_bt_name : nxt::T("bt"); break;
+                        default: label = nxt::T("close"); break;
+                    }
+                    if(label != this->sheet_icon_label_str) {
+                        this->sheet_icon_label_str = label;
+                        Free(this->sheet_icon_label);
+                        this->sheet_icon_label = Text(pu::ui::DefaultFontSize::Small, label);
+                    }
+                    if(this->sheet_icon_label != nullptr) {
+                        const auto lw = std::min(TexW(this->sheet_icon_label), iw);
+                        const auto lx = std::clamp(cx - lw / 2, ix, ix + iw - lw);
+                        if(danger) {
+                            SDL_SetTextureColorMod(this->sheet_icon_label, 0xFF, 0x6B, 0x5E);
+                        }
+                        RenderTextFit(drawer, this->sheet_icon_label, (double)lx, icon_cy + isz / 2 + 14, (double)iw, ca(240.0), false);
+                        if(danger) {
+                            SDL_SetTextureColorMod(this->sheet_icon_label, 0xFF, 0xFF, 0xFF);
+                        }
+                    }
+                }
+                this->sheet_hits.push_back({ 10 + i, cx - isz / 2, icon_cy - isz / 2, isz, isz });
+            }
+
+            // Play something else
+            if(!this->sheet_other_ids.empty()) {
+                Draw(drawer, this->sheet_other_label, ix, other_label_y, ca(150.0));
+                for(s32 i = 0; i < (s32)this->sheet_other_ids.size(); i++) {
+                    const auto f = (this->sheet_zone == 2) && (this->sheet_other_sel == i);
+                    const auto grow = f ? 8 : 0;
+                    const auto x = ix + i * (card + card_gap) - grow / 2;
+                    const auto yy = cards_y - grow / 2 - (f ? 4 : 0);
+                    const auto s = card + grow;
+                    if(f) {
+                        FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(235.0) }, x - 5, yy - 5, s + 10, s + 10, 24);
+                    }
+                    auto icon = this->sheet_other_icons.at(i);
+                    if((icon != nullptr) && (icon->Get() != nullptr)) {
+                        drawer->RenderTexture(icon->Get(), x, yy, pu::ui::render::TextureRenderOptions(ca(f ? 255.0 : 150.0), s, s, {}, {}, {}));
+                    }
+                    else {
+                        FillRR(drawer, { 0x2A, 0x2D, 0x38, ca(255.0) }, x, yy, s, s, 18);
+                    }
+                    this->sheet_hits.push_back({ 20 + i, ix + i * (card + card_gap), cards_y, card, card });
                 }
             }
-            else if(this->sheet_other_sel < (s32)this->sheet_other_names.size()) {
-                hint = nxt::Sub(nxt::T("h_other"), "name", this->sheet_other_names.at(this->sheet_other_sel));
+
+            // One contextual hint
+            {
+                std::string hint;
+                if(this->sheet_zone == 0) {
+                    hint = nxt::T("h_continue");
+                }
+                else if(this->sheet_zone == 1) {
+                    switch(this->sheet_icon_sel) {
+                        case 0: hint = nxt::T("h_album"); break;
+                        case 1: hint = nxt::T("h_library"); break;
+                        case 2: hint = this->sheet_bt_connected ? nxt::Sub(nxt::T("h_bt_open_on"), "name", this->sheet_bt_name) : nxt::T("h_bt_open"); break;
+                        default: hint = nxt::T("h_close"); break;
+                    }
+                }
+                else if(this->sheet_other_sel < (s32)this->sheet_other_names.size()) {
+                    hint = nxt::Sub(nxt::T("h_other"), "name", this->sheet_other_names.at(this->sheet_other_sel));
+                }
+                if(hint != this->sheet_hint_str) {
+                    this->sheet_hint_str = hint;
+                    Free(this->sheet_hint);
+                    this->sheet_hint = Text(pu::ui::DefaultFontSize::Small, hint);
+                }
+                RenderTextFit(drawer, this->sheet_hint, (double)ix, py + ph - 62, (double)iw, ca(125.0), false);
             }
-            if(hint != this->sheet_hint_str) {
-                this->sheet_hint_str = hint;
-                Free(this->sheet_hint);
-                this->sheet_hint = Text(pu::ui::DefaultFontSize::Small, hint);
-            }
-            RenderTextFit(drawer, this->sheet_hint, (double)ix, py + ph - 62, (double)iw, ca(125.0), false);
         }
 
         // Anywhere on the panel or the capture counts as "inside"
@@ -3341,7 +3649,7 @@ namespace ul::menu::ui {
 
     void EntryMenu::LockRefreshBluetooth(const bool force) {
         this->lock_bt_poll += this->fx_dt;
-        if(!force && (this->lock_bt_poll < 1.0)) {
+        if(!force && (this->lock_bt_poll < 0.25)) {
             return;
         }
         this->lock_bt_poll = 0.0;
@@ -3357,7 +3665,13 @@ namespace ul::menu::ui {
             this->lock_bt_paired = !paired.empty();
             name = paired.empty() ? nxt::T("headphones") : std::string(paired.front().name, strnlen(paired.front().name, sizeof(paired.front().name)));
         }
-        const auto sub = this->lock_bt_connected ? nxt::T("connected") : nxt::T("connect");
+        std::string sub = this->lock_bt_connected ? nxt::T("connected") : nxt::T("connect");
+        if(this->bt_pending) {
+            sub = nxt::T(this->bt_pending_connect ? "bt_st_connecting" : "bt_st_disconnecting");
+        }
+        else if(this->fx_time < this->bt_failed_t) {
+            sub = nxt::T("bt_st_failed");
+        }
         if(force || (name != this->lock_bt_str) || (sub != this->lock_bt_sub_str) || (this->lock_bt_tex == nullptr)) {
             this->lock_bt_str = name;
             this->lock_bt_sub_str = sub;
@@ -3369,10 +3683,12 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::LockBluetooth() {
-        const auto dev = bt::GetConnectedAudioDevice();
-        if(dev.name[0] != '\0') {
-            bt::DisconnectAudioDevice(dev);
-            g_MenuApplication->ShowNotification(nxt::Sub(nxt::T("bt_disconnecting"), "name", std::string(dev.name, strnlen(dev.name, sizeof(dev.name)))), 1800);
+        if(this->bt_pending) {
+            return;
+        }
+        const auto cur = bt::GetConnectedAudioDevice();
+        if(cur.name[0] != '\0') {
+            this->BtRequest(cur, false);
         }
         else {
             const auto paired = bt::ListPairedAudioDevices();
@@ -3380,14 +3696,11 @@ namespace ul::menu::ui {
                 g_MenuApplication->ShowNotification(nxt::T("bt_pair_first"), 3000);
             }
             else {
-                const auto &target = paired.front();
-                bt::ConnectAudioDevice(target);
-                g_MenuApplication->ShowNotification(nxt::Sub(nxt::T("bt_connecting"), "name", std::string(target.name, strnlen(target.name, sizeof(target.name)))), 2200);
+                this->BtRequest(paired.front(), true);
             }
         }
-        this->Haptic(0.3f, 200.0f, 0.02);
-        this->lock_bt_poll = 0.4;
-        this->sheet_bt_poll = 0.4;
+        this->lock_bt_poll = 1.0;
+        this->sheet_bt_poll = 1.0;
     }
 
     void EntryMenu::LockSetBrightness(const float value) {

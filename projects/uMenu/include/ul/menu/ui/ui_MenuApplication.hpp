@@ -249,6 +249,10 @@ namespace ul::menu::ui {
                 return this->loaded_menu;
             }
 
+            inline SettingsMenuLayout::Ref &GetSettingsMenuLayout() {
+                return this->settings_menu_lyt;
+            }
+
             inline MainMenuLayout::Ref &GetMainMenuLayout() {
                 return this->main_menu_lyt;
             }

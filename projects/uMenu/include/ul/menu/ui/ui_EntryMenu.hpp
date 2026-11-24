@@ -46,7 +46,7 @@ namespace ul::menu::ui {
             using FocusedEntryChangeStartedCallback = std::function<void()>;
 
             // NX Dash callbacks into the main layout
-            enum class SheetAction : u32 { Resume = 0, Close = 1, Album = 2, Library = 3, PlayOther = 4 };
+            enum class SheetAction : u32 { Resume = 0, Close = 1, Album = 2, Library = 3, PlayOther = 4, BluetoothPair = 5 };
             using SheetActionCallback = std::function<void(const SheetAction)>;
             using ShelfFolderCallback = std::function<void(const std::string&, const std::string&)>;
 
@@ -450,7 +450,7 @@ namespace ul::menu::ui {
             pu::sdl2::Texture sheet_icon_label = nullptr;
             std::string sheet_icon_label_str;
             std::string sheet_hint_str;
-            pu::sdl2::Texture sheet_icons[5] = {};
+            pu::sdl2::Texture sheet_icons[6] = {};
             bool sheet_icons_loaded = false;
             std::vector<u64> sheet_other_ids;
             std::vector<pu::sdl2::TextureHandle::Ref> sheet_other_icons;
@@ -461,6 +461,33 @@ namespace ul::menu::ui {
             bool sheet_bt_paired = false;
             double sheet_bt_poll = 0.0;
             void SheetActivate();
+            // Bluetooth: one shared request state for the panel and the lock screen
+            enum class BtState { Idle, Connected, Connecting, Disconnecting, Failed };
+            bool bt_pending = false;
+            bool bt_pending_connect = false;
+            BtdrvAddress bt_pending_addr = {};
+            std::string bt_pending_name;
+            double bt_pending_t = 0.0;
+            BtdrvAddress bt_failed_addr = {};
+            double bt_failed_t = 0.0;
+            void BtRequest(const BtmAudioDevice &dev, const bool connect);
+            void BtUpdate();
+            BtState BtStateFor(const BtmAudioDevice &dev);
+            bool sheet_bt_open = false;
+            s32 sheet_bt_sel = 0;
+            double sheet_btl_y = 0.0;
+            bool sheet_btl_init = false;
+            std::vector<BtmAudioDevice> sheet_bt_devs;
+            std::vector<pu::sdl2::Texture> sheet_bt_dev_texs;
+            std::string sheet_bt_devs_sig;
+            pu::sdl2::Texture sheet_bt_title_tex = nullptr;
+            pu::sdl2::Texture sheet_bt_pair_tex = nullptr;
+            pu::sdl2::Texture sheet_bt_none_tex = nullptr;
+            pu::sdl2::Texture sheet_bt_st_texs[4] = {};
+            void SheetBtOpen();
+            void SheetBtActivate();
+            void SheetBtInput(const u64 keys_down);
+            void SheetRenderBluetooth(pu::ui::render::Renderer::Ref &drawer, const s32 ix, const s32 iw, const s32 y0, const s32 hint_y, const double a, const std::function<u8(double)> &ca);
             void SheetRefreshBluetooth();
 
             inline bool IsNotInSwipe() {

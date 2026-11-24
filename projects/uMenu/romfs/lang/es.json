@@ -355,5 +355,22 @@
     "nx_br_hint0": "Izquierda / derecha  Elegir          A  Pasa de ronda          B  Salir",
     "nx_br_hintC": "A  Jugar          Y  Otro torneo          B  Deshacer",
     "nx_br_need": "Hacen falta al menos cuatro juegos en este estante",
-    "nx_br_vs": "vs"
+    "nx_br_vs": "vs",
+    "nx_bt": "Bluetooth",
+    "nx_bt_title": "Auriculares Bluetooth",
+    "nx_bt_st_on": "Conectado",
+    "nx_bt_st_connecting": "Conectando…",
+    "nx_bt_st_disconnecting": "Desconectando…",
+    "nx_bt_st_failed": "No se pudo conectar",
+    "nx_bt_pair_new": "Emparejar un dispositivo nuevo",
+    "nx_bt_none": "Todavía no hay auriculares emparejados",
+    "nx_bt_ok": "{name} conectado",
+    "nx_bt_off": "{name} desconectado",
+    "nx_h_bt_open": "A  Dispositivos Bluetooth",
+    "nx_h_bt_open_on": "A  Dispositivos Bluetooth  ·  {name} conectado",
+    "nx_h_bt_connect": "A  Conectar      B  Volver",
+    "nx_h_bt_disconnect": "A  Desconectar      B  Volver",
+    "nx_h_bt_pair": "A  Buscar dispositivos nuevos      B  Volver",
+    "nx_h_bt_failed": "Desconectalos del teléfono y apretá A de nuevo",
+    "nx_h_bt_wait": "Esperando a {name}…      B  Volver"
 }

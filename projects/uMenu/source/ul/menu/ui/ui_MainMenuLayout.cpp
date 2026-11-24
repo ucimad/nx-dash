@@ -800,6 +800,12 @@ namespace ul::menu::ui {
                     ShowAlbum();
                     break;
                 }
+                case EntryMenu::SheetAction::BluetoothPair: {
+                    // Pairing lives in Settings: open its device search directly
+                    ShowSettingsMenu();
+                    g_MenuApplication->GetSettingsMenuLayout()->OpenSubmenu(SettingMenu::Bluetooth, SettingSubmenu::Bluetooth_BluetoothAudioDiscover);
+                    break;
+                }
                 case EntryMenu::SheetAction::PlayOther: {
                     // Close the paused game and start the chosen one, no detour through the shelf
                     const auto app_id = this->entry_menu->GetPlayOtherAppId();

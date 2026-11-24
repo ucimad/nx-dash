@@ -105,6 +105,9 @@ namespace ul::menu::ui {
             }
 
             void Reload(const bool soft);
+
+            // NX Dash: jump straight into a submenu (e.g. Bluetooth search from the pause panel)
+            void OpenSubmenu(const SettingMenu menu, const SettingSubmenu submenu);
     };
 
 }

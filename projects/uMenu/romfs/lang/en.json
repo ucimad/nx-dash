@@ -355,5 +355,22 @@
     "nx_br_hint0": "Left / right  Choose          A  Advances          B  Exit",
     "nx_br_hintC": "A  Play          Y  New bracket          B  Undo",
     "nx_br_need": "You need at least four games on this shelf",
-    "nx_br_vs": "vs"
+    "nx_br_vs": "vs",
+    "nx_bt": "Bluetooth",
+    "nx_bt_title": "Bluetooth headphones",
+    "nx_bt_st_on": "Connected",
+    "nx_bt_st_connecting": "Connecting…",
+    "nx_bt_st_disconnecting": "Disconnecting…",
+    "nx_bt_st_failed": "Couldn't connect",
+    "nx_bt_pair_new": "Pair a new device",
+    "nx_bt_none": "No headphones paired yet",
+    "nx_bt_ok": "{name} connected",
+    "nx_bt_off": "{name} disconnected",
+    "nx_h_bt_open": "A  Bluetooth devices",
+    "nx_h_bt_open_on": "A  Bluetooth devices  ·  {name} connected",
+    "nx_h_bt_connect": "A  Connect      B  Back",
+    "nx_h_bt_disconnect": "A  Disconnect      B  Back",
+    "nx_h_bt_pair": "A  Search for new devices      B  Back",
+    "nx_h_bt_failed": "Disconnect them from your phone, then press A again",
+    "nx_h_bt_wait": "Waiting for {name}…      B  Back"
 }
