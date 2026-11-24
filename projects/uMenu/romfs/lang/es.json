@@ -372,5 +372,13 @@
     "nx_h_bt_disconnect": "A  Desconectar      B  Volver",
     "nx_h_bt_pair": "A  Buscar dispositivos nuevos      B  Volver",
     "nx_h_bt_failed": "Desconectalos del teléfono y apretá A de nuevo",
-    "nx_h_bt_wait": "Esperando a {name}…      B  Volver"
+    "nx_h_bt_wait": "Esperando a {name}…      B  Volver",
+    "nx_guide": "Guía",
+    "nx_guide_lang": "es",
+    "nx_g_hint": "A  Ver una pista  ·  {b}",
+    "nx_g_more": "A  Siguiente pista  ·  {a} de {b}",
+    "nx_h_guide": "▲▼  Mover      L R  Sección      B  Volver",
+    "nx_h_guide_hint": "A  Pista      ▲▼  Mover      L R  Sección      B  Volver",
+    "nx_h_guide_hide": "A  Ocultar pistas      L R  Sección      B  Volver",
+    "nx_h_guide_open": "A  Abrir la guía de este juego"
 }

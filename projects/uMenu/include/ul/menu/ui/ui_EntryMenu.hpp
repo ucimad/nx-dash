@@ -489,6 +489,69 @@ namespace ul::menu::ui {
             void SheetBtInput(const u64 keys_down);
             void SheetRenderBluetooth(pu::ui::render::Renderer::Ref &drawer, const s32 ix, const s32 iw, const s32 y0, const s32 hint_y, const double a, const std::function<u8(double)> &ca);
             void SheetRefreshBluetooth();
+            // Guide: per-game notes read from sdmc:/ulaunch/nxdash_guides/<APPID>.json
+            struct GuideRow {
+                std::string text;
+                std::string sub;
+                std::string zone;
+                std::string mark;
+                std::vector<std::string> hints;
+            };
+            struct GuideTab {
+                std::string title;
+                std::vector<GuideRow> rows;
+            };
+            struct GuideRowTex {
+                pu::sdl2::Texture title = nullptr;
+                pu::sdl2::Texture zone = nullptr;
+                std::vector<pu::sdl2::Texture> sub;
+                std::vector<std::vector<pu::sdl2::Texture>> hints;
+            };
+            bool guide_avail = false;
+            std::string guide_status;
+            std::vector<std::vector<std::string>> guide_stats;
+            std::vector<GuideTab> guide_tabs;
+            bool sheet_guide_open = false;
+            s32 guide_tab = 0;
+            s32 guide_sel = 0;
+            s32 guide_built_tab = -1;
+            std::vector<s32> guide_rev;
+            double guide_ly = 0.0;
+            double guide_lh = 0.0;
+            double guide_scroll = 0.0;
+            double guide_tx = 0.0;
+            double guide_tw = 0.0;
+            bool guide_init = false;
+            double sheet_pw = 640.0;
+            pu::sdl2::Texture guide_icon = nullptr;
+            pu::sdl2::Texture guide_title_tex = nullptr;
+            pu::sdl2::Texture guide_game_tex = nullptr;
+            pu::sdl2::Texture guide_status_tex = nullptr;
+            pu::sdl2::Texture guide_lr_tex = nullptr;
+            pu::sdl2::Texture guide_more_tex = nullptr;
+            std::string guide_more_str;
+            std::vector<pu::sdl2::Texture> guide_stat_texs;
+            std::vector<pu::sdl2::Texture> guide_tab_texs;
+            std::vector<GuideRowTex> guide_row_texs;
+            void GuideLoad(const u64 app_id);
+            // Icon row: album, library, (guide), bluetooth, close
+            inline s32 SheetIconCount() {
+                return this->guide_avail ? 5 : 4;
+            }
+            inline s32 SheetIconId(const s32 slot) {
+                if(this->guide_avail) {
+                    return slot;
+                }
+                return (slot >= 2) ? (slot + 1) : slot;
+            }
+            void GuideFreeTextures();
+            void GuideFreeRows();
+            void GuideBuildRows();
+            void GuideOpen();
+            void GuideSetTab(const s32 tab);
+            void GuideActivate();
+            void GuideInput(const u64 keys_down);
+            void SheetRenderGuide(pu::ui::render::Renderer::Ref &drawer, const s32 px, const s32 py, const s32 pw, const s32 ph, const double a, const std::function<u8(double)> &ca);
 
             inline bool IsNotInSwipe() {
                 return this->swipe_mode == SwipeMode::None;

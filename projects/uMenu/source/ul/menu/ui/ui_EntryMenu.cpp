@@ -12,6 +12,7 @@
 #include <ul/menu/smi/smi_Commands.hpp>
 #include <ul/util/util_String.hpp>
 #include <ul/acc/acc_Accounts.hpp>
+#include <ul/util/util_Json.hpp>
 
 extern ul::menu::ui::GlobalSettings g_GlobalSettings;
 extern ul::menu::ui::MenuApplication::Ref g_MenuApplication;
@@ -2170,6 +2171,7 @@ namespace ul::menu::ui {
         Free(this->sheet_other_label);
         Free(this->sheet_icon_label);
         this->sheet_icon_label_str.clear();
+        this->GuideFreeTextures();
         this->sheet_hint_str.clear();
         this->sheet_other_icons.clear();
         this->sheet_hint = nullptr;
@@ -2442,6 +2444,508 @@ namespace ul::menu::ui {
         }
     }
 
+    // ---- Guide: per-game notes for when you get stuck, read from the SD card ----
+
+    namespace {
+
+        std::vector<std::string> WrapText(const pu::ui::DefaultFontSize size, const std::string &text, const s32 max_w) {
+            std::vector<std::string> out;
+            const auto font = pu::ui::GetDefaultFont(size);
+            std::string line;
+            size_t pos = 0;
+            while(pos <= text.length()) {
+                auto sp = text.find(' ', pos);
+                if(sp == std::string::npos) {
+                    sp = text.length();
+                }
+                const auto word = text.substr(pos, sp - pos);
+                pos = sp + 1;
+                if(word.empty()) {
+                    continue;
+                }
+                const auto cand = line.empty() ? word : (line + " " + word);
+                if(!line.empty() && (pu::ui::render::GetTextWidth(font, cand) > max_w)) {
+                    out.push_back(line);
+                    line = word;
+                }
+                else {
+                    line = cand;
+                }
+            }
+            if(!line.empty()) {
+                out.push_back(line);
+            }
+            return out;
+        }
+
+        constexpr s32 GuidePanelW = 1240;
+        constexpr s32 GuidePad = 56;
+        constexpr s32 GuideIW = GuidePanelW - GuidePad * 2;
+        constexpr s32 GuideLineH = 36;
+
+    }
+
+    void EntryMenu::GuideLoad(const u64 app_id) {
+        this->guide_avail = false;
+        this->guide_status.clear();
+        this->guide_stats.clear();
+        this->guide_tabs.clear();
+        if(app_id == 0) {
+            return;
+        }
+        char path[FS_MAX_PATH] = {};
+        snprintf(path, sizeof(path), "sdmc:/ulaunch/nxdash_guides/%016lX.json", app_id);
+        util::JSON json;
+        if(R_FAILED(util::LoadJSONFromFile(json, path))) {
+            return;
+        }
+        try {
+            auto lang = nxt::T("guide_lang");
+            if(!json.contains(lang)) {
+                lang = "en";
+            }
+            if(!json.contains(lang) || !json[lang].is_object()) {
+                return;
+            }
+            const auto &g = json[lang];
+            this->guide_status = g.value("status", "");
+            if(g.contains("stats") && g["stats"].is_array()) {
+                for(const auto &st : g["stats"]) {
+                    std::vector<std::string> v;
+                    for(const auto &x : st) {
+                        v.push_back(x.get<std::string>());
+                    }
+                    v.resize(3);
+                    this->guide_stats.push_back(v);
+                    if(this->guide_stats.size() >= 4) {
+                        break;
+                    }
+                }
+            }
+            if(g.contains("tabs") && g["tabs"].is_array()) {
+                for(const auto &t : g["tabs"]) {
+                    GuideTab tab;
+                    tab.title = t.value("title", "");
+                    if(t.contains("rows") && t["rows"].is_array()) {
+                        for(const auto &r : t["rows"]) {
+                            GuideRow row;
+                            row.text = r.value("text", "");
+                            row.sub = r.value("sub", "");
+                            row.zone = r.value("zone", "");
+                            row.mark = r.value("mark", "");
+                            if(r.contains("hints") && r["hints"].is_array()) {
+                                for(const auto &h : r["hints"]) {
+                                    row.hints.push_back(h.get<std::string>());
+                                }
+                            }
+                            tab.rows.push_back(row);
+                        }
+                    }
+                    if(!tab.rows.empty()) {
+                        this->guide_tabs.push_back(tab);
+                    }
+                }
+            }
+        }
+        catch(...) {
+            this->guide_tabs.clear();
+        }
+        this->guide_avail = !this->guide_tabs.empty();
+    }
+
+    void EntryMenu::GuideFreeRows() {
+        for(auto &rt : this->guide_row_texs) {
+            Free(rt.title);
+            Free(rt.zone);
+            for(auto &t : rt.sub) {
+                Free(t);
+            }
+            for(auto &h : rt.hints) {
+                for(auto &t : h) {
+                    Free(t);
+                }
+            }
+        }
+        this->guide_row_texs.clear();
+        this->guide_built_tab = -1;
+    }
+
+    void EntryMenu::GuideFreeTextures() {
+        this->GuideFreeRows();
+        Free(this->guide_title_tex);
+        Free(this->guide_game_tex);
+        Free(this->guide_status_tex);
+        Free(this->guide_lr_tex);
+        Free(this->guide_more_tex);
+        this->guide_more_str.clear();
+        for(auto &t : this->guide_stat_texs) {
+            Free(t);
+        }
+        this->guide_stat_texs.clear();
+        for(auto &t : this->guide_tab_texs) {
+            Free(t);
+        }
+        this->guide_tab_texs.clear();
+    }
+
+    void EntryMenu::GuideBuildRows() {
+        this->GuideFreeRows();
+        if((this->guide_tab < 0) || (this->guide_tab >= (s32)this->guide_tabs.size())) {
+            return;
+        }
+        for(const auto &row : this->guide_tabs.at(this->guide_tab).rows) {
+            GuideRowTex rt;
+            rt.title = Text(pu::ui::DefaultFontSize::Medium, row.text);
+            if(!row.zone.empty()) {
+                rt.zone = Text(pu::ui::DefaultFontSize::Small, row.zone);
+            }
+            if(!row.sub.empty()) {
+                for(const auto &l : WrapText(pu::ui::DefaultFontSize::Small, row.sub, GuideIW - 70)) {
+                    rt.sub.push_back(Text(pu::ui::DefaultFontSize::Small, l));
+                }
+            }
+            for(const auto &h : row.hints) {
+                std::vector<pu::sdl2::Texture> lines;
+                for(const auto &l : WrapText(pu::ui::DefaultFontSize::Small, h, GuideIW - 110)) {
+                    lines.push_back(Text(pu::ui::DefaultFontSize::Small, l));
+                }
+                rt.hints.push_back(lines);
+            }
+            this->guide_row_texs.push_back(rt);
+        }
+        this->guide_rev.assign(this->guide_row_texs.size(), 0);
+        this->guide_built_tab = this->guide_tab;
+    }
+
+    void EntryMenu::GuideOpen() {
+        if(!this->guide_avail) {
+            return;
+        }
+        this->GuideFreeTextures();
+        this->guide_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("guide"));
+        {
+            std::string title;
+            std::string meta;
+            this->DescribeSuspended(title, meta);
+            if(!title.empty()) {
+                this->guide_game_tex = Text(pu::ui::DefaultFontSize::Small, title);
+            }
+        }
+        if(!this->guide_status.empty()) {
+            this->guide_status_tex = Text(pu::ui::DefaultFontSize::Small, this->guide_status);
+        }
+        this->guide_lr_tex = Text(pu::ui::DefaultFontSize::Small, "L  R");
+        for(const auto &st : this->guide_stats) {
+            this->guide_stat_texs.push_back(Text(pu::ui::DefaultFontSize::Large, st.at(0)));
+            this->guide_stat_texs.push_back(st.at(1).empty() ? nullptr : Text(pu::ui::DefaultFontSize::Small, st.at(1)));
+            this->guide_stat_texs.push_back(st.at(2).empty() ? nullptr : Text(pu::ui::DefaultFontSize::Small, st.at(2)));
+        }
+        for(const auto &t : this->guide_tabs) {
+            this->guide_tab_texs.push_back(Text(pu::ui::DefaultFontSize::Medium, t.title));
+        }
+        if(this->guide_icon == nullptr) {
+            this->guide_icon = TryFindLoadImage("ui/Main/NxDash/Book");
+        }
+        this->guide_tab = 0;
+        this->guide_sel = 0;
+        this->guide_scroll = 0.0;
+        this->guide_init = false;
+        this->guide_tx = 0.0;
+        this->guide_tw = 0.0;
+        this->GuideBuildRows();
+        this->sheet_hint_str.clear();
+        this->sheet_guide_open = true;
+    }
+
+    void EntryMenu::GuideSetTab(const s32 tab) {
+        const auto n = (s32)this->guide_tabs.size();
+        if(n == 0) {
+            return;
+        }
+        this->guide_tab = ((tab % n) + n) % n;
+        this->guide_sel = 0;
+        this->guide_scroll = 0.0;
+        this->guide_init = false;
+        this->GuideBuildRows();
+    }
+
+    void EntryMenu::GuideActivate() {
+        if((this->guide_sel < 0) || (this->guide_sel >= (s32)this->guide_row_texs.size())) {
+            return;
+        }
+        const auto nh = (s32)this->guide_row_texs.at(this->guide_sel).hints.size();
+        if(nh == 0) {
+            this->NxSfx(1);
+            return;
+        }
+        auto &rev = this->guide_rev.at(this->guide_sel);
+        rev = (rev >= nh) ? 0 : (rev + 1);
+        this->NxSfx(2);
+        this->Haptic(0.2f, 160.0f, 0.02);
+    }
+
+    void EntryMenu::GuideInput(const u64 keys_down) {
+        if(keys_down & HidNpadButton_B) {
+            this->sheet_guide_open = false;
+            this->sheet_hint_str.clear();
+            this->NxSfx(1);
+            return;
+        }
+        const auto rows = (s32)this->guide_row_texs.size();
+        if(keys_down & (HidNpadButton_L | HidNpadButton_ZL | HidNpadButton_AnyLeft)) {
+            this->GuideSetTab(this->guide_tab - 1);
+            this->NxSfx(0);
+            this->Haptic(0.18f, 160.0f, 0.015);
+        }
+        else if(keys_down & (HidNpadButton_R | HidNpadButton_ZR | HidNpadButton_AnyRight)) {
+            this->GuideSetTab(this->guide_tab + 1);
+            this->NxSfx(0);
+            this->Haptic(0.18f, 160.0f, 0.015);
+        }
+        else if(keys_down & (HidNpadButton_AnyUp | HidNpadButton_AnyDown)) {
+            const auto next = std::clamp(this->guide_sel + ((keys_down & HidNpadButton_AnyUp) ? -1 : 1), 0, std::max(0, rows - 1));
+            if(next != this->guide_sel) {
+                this->guide_sel = next;
+                this->NxSfx(0);
+                this->Haptic(0.18f, 160.0f, 0.015);
+            }
+            else {
+                this->NxSfx(1);
+                this->Haptic(0.3f, 120.0f, 0.03);
+            }
+        }
+        else if(keys_down & HidNpadButton_A) {
+            this->GuideActivate();
+        }
+    }
+
+    void EntryMenu::SheetRenderGuide(pu::ui::render::Renderer::Ref &drawer, const s32 px, const s32 py, const s32 pw, const s32 ph, const double a, const std::function<u8(double)> &ca_in) {
+        if(this->guide_built_tab != this->guide_tab) {
+            this->GuideBuildRows();
+        }
+        // The panel widens first, then the guide fades in
+        const auto grow = std::clamp(((double)pw - 640.0) / (double)(GuidePanelW - 640), 0.0, 1.0);
+        const auto ca = [&](const double v) {
+            return (u8)std::clamp((double)ca_in(v) * grow, 0.0, 255.0);
+        };
+        const s32 ix = px + GuidePad;
+        const s32 iw = GuideIW;
+        auto sdl = pu::ui::render::GetMainRenderer();
+        const SDL_Rect panel_clip = { px, py, pw, ph };
+        SDL_RenderSetClipRect(sdl, &panel_clip);
+
+        s32 y = py + 48;
+        // Header: what this is, which game, where you are
+        if(this->guide_icon != nullptr) {
+            drawer->RenderTexture(this->guide_icon, ix, y + 2, pu::ui::render::TextureRenderOptions(ca(235.0), 44, 44, {}, {}, {}));
+        }
+        Draw(drawer, this->guide_title_tex, ix + 62, y + 24 - TexH(this->guide_title_tex) / 2, ca(255.0));
+        if(this->guide_game_tex != nullptr) {
+            const auto gw = std::min(TexW(this->guide_game_tex), iw - 320);
+            RenderTextFit(drawer, this->guide_game_tex, (double)(ix + iw - gw), y + 8, (double)gw, ca(150.0), false);
+        }
+        y += 52;
+        if(this->guide_status_tex != nullptr) {
+            RenderTextFit(drawer, this->guide_status_tex, (double)(ix + 62), y, (double)(iw - 62), ca(165.0), false);
+        }
+        y += 58;
+
+        // Four numbers, quiet tiles
+        if(!this->guide_stats.empty()) {
+            const auto n = (s32)this->guide_stats.size();
+            const s32 gap = 18;
+            const s32 tw = (iw - (n - 1) * gap) / n;
+            for(s32 i = 0; i < n; i++) {
+                const auto x = ix + i * (tw + gap);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(14.0) }, x, y, tw, 96, 22);
+                auto v = this->guide_stat_texs.at(i * 3);
+                auto l = this->guide_stat_texs.at(i * 3 + 1);
+                auto s = this->guide_stat_texs.at(i * 3 + 2);
+                Draw(drawer, v, x + 22, y + 48 - TexH(v) / 2, ca(255.0));
+                const auto lx = x + 34 + TexW(v);
+                const auto lw = (double)(tw - (lx - x) - 16);
+                RenderTextFit(drawer, l, (double)lx, y + 14, lw, ca(215.0), false);
+                RenderTextFit(drawer, s, (double)lx, y + 50, lw, ca(130.0), false);
+            }
+            y += 128;
+        }
+
+        // Sections: plain text, one underline that slides
+        {
+            s32 x = ix;
+            s32 cur_x = ix;
+            s32 cur_w = 0;
+            for(s32 i = 0; i < (s32)this->guide_tab_texs.size(); i++) {
+                auto t = this->guide_tab_texs.at(i);
+                const auto f = i == this->guide_tab;
+                Draw(drawer, t, x, y, ca(f ? 255.0 : 120.0));
+                if(f) {
+                    cur_x = x;
+                    cur_w = TexW(t);
+                }
+                this->sheet_hits.push_back({ 70 + i, x - 10, y - 10, TexW(t) + 20, 56 });
+                x += TexW(t) + 44;
+            }
+            if(this->guide_tw <= 0.0) {
+                this->guide_tx = cur_x;
+                this->guide_tw = cur_w;
+            }
+            this->guide_tx = this->FxApproach(this->guide_tx, cur_x, 0.30);
+            this->guide_tw = this->FxApproach(this->guide_tw, cur_w, 0.30);
+            FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(240.0) }, (s32)this->guide_tx, y + 44, (s32)this->guide_tw, 4, 2);
+            Draw(drawer, this->guide_lr_tex, ix + iw - TexW(this->guide_lr_tex), y + 4, ca(110.0));
+            y += 78;
+        }
+
+        // Rows: only the focused one opens up
+        const s32 top = y;
+        const s32 bot = py + ph - 96;
+        const auto &rows = this->guide_tabs.at(this->guide_tab).rows;
+        const auto nrows = (s32)this->guide_row_texs.size();
+        if(nrows == 0) {
+            SDL_RenderSetClipRect(sdl, nullptr);
+            return;
+        }
+        this->guide_sel = std::clamp(this->guide_sel, 0, nrows - 1);
+        std::vector<s32> heights(nrows);
+        std::vector<s32> offs(nrows);
+        s32 acc = 0;
+        for(s32 i = 0; i < nrows; i++) {
+            const auto &rt = this->guide_row_texs.at(i);
+            const auto f = i == this->guide_sel;
+            const auto nsub = f ? (s32)rt.sub.size() : std::min<s32>(1, (s32)rt.sub.size());
+            s32 h = 74 + nsub * GuideLineH;
+            if(f) {
+                const auto rev = this->guide_rev.at(i);
+                if(rev > 0) {
+                    h += 14;
+                    for(s32 k = 0; k < rev; k++) {
+                        h += (s32)rt.hints.at(k).size() * GuideLineH + 16;
+                    }
+                }
+                if(rev < (s32)rt.hints.size()) {
+                    h += 44;
+                }
+            }
+            heights[i] = h;
+            offs[i] = acc;
+            acc += h + 8;
+        }
+        const auto view = bot - top;
+        const auto fy = offs[this->guide_sel];
+        const auto fh = heights[this->guide_sel];
+        double want = this->guide_scroll;
+        if(fy - want < 0) {
+            want = fy;
+        }
+        if(fy + fh - want > view) {
+            want = fy + fh - view;
+        }
+        want = std::max(0.0, want);
+        if(!this->guide_init) {
+            this->guide_scroll = want;
+        }
+        this->guide_scroll = this->FxApproach(this->guide_scroll, want, 0.30);
+        const auto ty = top + fy - this->guide_scroll;
+        if(!this->guide_init) {
+            this->guide_init = true;
+            this->guide_ly = ty;
+            this->guide_lh = fh;
+        }
+        this->guide_ly = this->FxApproach(this->guide_ly, ty, 0.30);
+        this->guide_lh = this->FxApproach(this->guide_lh, fh, 0.30);
+
+        const SDL_Rect list_clip = { px, top - 10, pw, view + 16 };
+        SDL_RenderSetClipRect(sdl, &list_clip);
+        RenderGlass(drawer, ix - 16, (s32)this->guide_ly, iw + 32, (s32)this->guide_lh, 30, a * grow, 100);
+        FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(22.0) }, ix - 16, (s32)this->guide_ly, iw + 32, std::min(60, (s32)this->guide_lh / 2), 30);
+
+        const auto pulse = 0.6 + 0.4 * std::sin(this->fx_time * 5.0);
+        for(s32 i = 0; i < nrows; i++) {
+            const auto &rt = this->guide_row_texs.at(i);
+            const auto &row = rows.at(i);
+            const auto f = i == this->guide_sel;
+            const auto ry = top + offs[i] - (s32)this->guide_scroll;
+            if((ry > bot + 20) || (ry + heights[i] < top - 20)) {
+                continue;
+            }
+            const auto ta = f ? 255.0 : 150.0;
+            s32 cx = ix + 8;
+            if(row.mark == "done") {
+                FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(f ? 60.0 : 40.0) }, ix, ry + 21, 34, 34, 17);
+                FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(ta) }, ix + 9, ry + 30, 16, 16, 8);
+                cx = ix + 50;
+            }
+            else if(row.mark == "here") {
+                FillRR(drawer, { 0xE8, 0x41, 0x32, ca(255.0 * pulse) }, ix + 7, ry + 29, 18, 18, 9);
+                cx = ix + 50;
+            }
+            s32 zone_w = 0;
+            if(rt.zone != nullptr) {
+                zone_w = std::min(260, TexW(rt.zone) + 30);
+                FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(f ? 34.0 : 16.0) }, ix + iw - zone_w, ry + 18, zone_w, 40, 20);
+                RenderTextFit(drawer, rt.zone, (double)(ix + iw - zone_w + 15), ry + 38 - TexH(rt.zone) / 2, (double)(zone_w - 30), ca(f ? 235.0 : 140.0), false);
+            }
+            RenderTextFit(drawer, rt.title, (double)cx, ry + 38 - TexH(rt.title) / 2, (double)(ix + iw - cx - zone_w - 20), ca(((row.mark == "done") && !f) ? 110.0 : ta), false);
+            s32 yy = ry + 66;
+            const auto nsub = f ? (s32)rt.sub.size() : std::min<s32>(1, (s32)rt.sub.size());
+            for(s32 k = 0; k < nsub; k++) {
+                Draw(drawer, rt.sub.at(k), cx, yy, ca(f ? 195.0 : 115.0));
+                yy += GuideLineH;
+            }
+            if(f) {
+                const auto rev = this->guide_rev.at(i);
+                if(rev > 0) {
+                    yy += 14;
+                    for(s32 k = 0; k < rev; k++) {
+                        const auto &lines = rt.hints.at(k);
+                        FillRR(drawer, { 0xFF, 0xD6, 0x66, ca(200.0) }, cx, yy + 6, 4, (s32)lines.size() * GuideLineH - 12, 2);
+                        for(auto l : lines) {
+                            Draw(drawer, l, cx + 26, yy, ca(235.0));
+                            yy += GuideLineH;
+                        }
+                        yy += 16;
+                    }
+                }
+                const auto nh = (s32)rt.hints.size();
+                if(rev < nh) {
+                    const auto label = nxt::Sub(nxt::Sub(nxt::T(rev == 0 ? "g_hint" : "g_more"), "a", std::to_string(rev + 1)), "b", std::to_string(nh));
+                    if(label != this->guide_more_str) {
+                        this->guide_more_str = label;
+                        Free(this->guide_more_tex);
+                        this->guide_more_tex = Text(pu::ui::DefaultFontSize::Small, label);
+                        SDL_SetTextureColorMod(this->guide_more_tex, 0xFF, 0xD6, 0x66);
+                    }
+                    Draw(drawer, this->guide_more_tex, cx, yy + 6, ca(220.0));
+                }
+            }
+            this->sheet_hits.push_back({ 100 + i, ix - 16, ry, iw + 32, heights[i] });
+        }
+        SDL_RenderSetClipRect(sdl, &panel_clip);
+
+        // One line: what the buttons do here
+        {
+            const auto &rt = this->guide_row_texs.at(this->guide_sel);
+            std::string hint;
+            if(rt.hints.empty()) {
+                hint = nxt::T("h_guide");
+            }
+            else if(this->guide_rev.at(this->guide_sel) >= (s32)rt.hints.size()) {
+                hint = nxt::T("h_guide_hide");
+            }
+            else {
+                hint = nxt::T("h_guide_hint");
+            }
+            if(hint != this->sheet_hint_str) {
+                this->sheet_hint_str = hint;
+                Free(this->sheet_hint);
+                this->sheet_hint = Text(pu::ui::DefaultFontSize::Small, hint);
+            }
+            RenderTextFit(drawer, this->sheet_hint, (double)ix, py + ph - 62, (double)iw, ca(120.0), false);
+        }
+        SDL_RenderSetClipRect(sdl, nullptr);
+    }
+
     void EntryMenu::SheetOpen() {
         this->SheetFree();
 
@@ -2519,6 +3023,8 @@ namespace ul::menu::ui {
         this->sheet_bt_poll = 1.0;
         this->SheetRefreshBluetooth();
         this->sheet_bt_open = false;
+        this->GuideLoad(g_GlobalSettings.system_status.suspended_app_id);
+        this->sheet_guide_open = false;
 
         this->sheet_zone = 0;
         this->sheet_icon_sel = 0;
@@ -2596,7 +3102,7 @@ namespace ul::menu::ui {
             this->SheetExecute(static_cast<u32>(SheetAction::Resume));
         }
         else if(this->sheet_zone == 1) {
-            switch(this->sheet_icon_sel) {
+            switch(this->SheetIconId(this->sheet_icon_sel)) {
                 case 0: {
                     this->SheetExecute(static_cast<u32>(SheetAction::Album));
                     break;
@@ -2606,6 +3112,10 @@ namespace ul::menu::ui {
                     break;
                 }
                 case 2: {
+                    this->GuideOpen();
+                    break;
+                }
+                case 3: {
                     this->SheetBtOpen();
                     break;
                 }
@@ -2622,6 +3132,10 @@ namespace ul::menu::ui {
     }
 
     void EntryMenu::SheetInput(const u64 keys_down, const pu::ui::TouchPoint touch_pos) {
+        if(this->sheet_guide_open && touch_pos.IsEmpty() && !this->sheet_touching) {
+            this->GuideInput(keys_down);
+            return;
+        }
         if(this->sheet_bt_open && touch_pos.IsEmpty() && !this->sheet_touching) {
             this->SheetBtInput(keys_down);
             return;
@@ -2636,6 +3150,30 @@ namespace ul::menu::ui {
             this->sheet_touching = false;
             for(const auto &hit : this->sheet_hits) {
                 if((this->sheet_touch_x >= hit.x) && (this->sheet_touch_x < hit.x + hit.w) && (this->sheet_touch_y >= hit.y) && (this->sheet_touch_y < hit.y + hit.h)) {
+                    if(this->sheet_guide_open) {
+                        if((hit.pos >= 70) && (hit.pos < 100)) {
+                            this->GuideSetTab(hit.pos - 70);
+                            this->NxSfx(0);
+                        }
+                        else if(hit.pos >= 100) {
+                            if(hit.pos - 100 == this->guide_sel) {
+                                this->GuideActivate();
+                            }
+                            else {
+                                this->guide_sel = hit.pos - 100;
+                                this->NxSfx(0);
+                            }
+                        }
+                        else if(hit.pos == -1) {
+                            // Outside the panel: back to the pause panel
+                            const s32 px_final = pu::ui::render::ScreenWidth - (s32)this->sheet_pw - 28;
+                            if(this->sheet_touch_x < px_final) {
+                                this->sheet_guide_open = false;
+                                this->sheet_hint_str.clear();
+                            }
+                        }
+                        return;
+                    }
                     if((hit.pos >= 30) && (hit.pos < 40)) {
                         const auto row = hit.pos - 30;
                         if(row == this->sheet_bt_sel) {
@@ -2689,7 +3227,7 @@ namespace ul::menu::ui {
         }
         else if(keys_down & HidNpadButton_AnyRight) {
             if(this->sheet_zone == 1) {
-                this->sheet_icon_sel = std::min(3, this->sheet_icon_sel + 1);
+                this->sheet_icon_sel = std::min(this->SheetIconCount() - 1, this->sheet_icon_sel + 1);
             }
             else if(this->sheet_zone == 2) {
                 this->sheet_other_sel = std::min((s32)this->sheet_other_ids.size() - 1, this->sheet_other_sel + 1);
@@ -2767,7 +3305,11 @@ namespace ul::menu::ui {
         // The library stays behind, dimmed: you paused, you didn't leave
         drawer->RenderRectangleFill({ 0x06, 0x07, 0x0B, alpha(196.0) }, 0, 0, sw, sh);
 
-        const s32 pw = 640;
+        this->sheet_pw = this->FxApproach(this->sheet_pw, this->sheet_guide_open ? (double)GuidePanelW : 640.0, 0.22);
+        if(std::abs(this->sheet_pw - (this->sheet_guide_open ? (double)GuidePanelW : 640.0)) < 0.5) {
+            this->sheet_pw = this->sheet_guide_open ? (double)GuidePanelW : 640.0;
+        }
+        const s32 pw = (s32)this->sheet_pw;
         const s32 px_final = sw - pw - 28;
         const s32 px = px_final + (s32)((1.0 - a) * (pw + 80));
         const s32 py = 28;
@@ -2778,8 +3320,8 @@ namespace ul::menu::ui {
 
         // Game capture: zooms from full screen into the space the panel leaves
         {
-            const double tw = 1040.0;
-            const double th = 585.0;
+            const double tw = std::min(1040.0, (double)px_final - 60.0);
+            const double th = tw * 9.0 / 16.0;
             const double tx = ((double)px_final - tw) / 2.0;
             const double ty = ((double)sh - th) / 2.0;
             const auto rx = tx * a;
@@ -2809,6 +3351,13 @@ namespace ul::menu::ui {
         RenderGlass(drawer, px, py, pw, ph, 40, a, 90);
 
         this->sheet_hits.clear();
+        if(this->sheet_guide_open || (this->sheet_pw > 660.0)) {
+            if(this->sheet_guide_open) {
+                this->SheetRenderGuide(drawer, px, py, pw, ph, a, ca);
+            }
+            this->sheet_hits.push_back({ -1, 0, 0, px_final + pw, sh });
+            return;
+        }
         s32 y = py + 52;
         {
             const auto bw = TexW(this->sheet_badge);
@@ -2835,7 +3384,8 @@ namespace ul::menu::ui {
             const s32 cont_h = 78;
             y += 108;
             const s32 isz = 92;
-            const s32 igap = (iw - isz * 4) / 3;
+            const s32 icount = this->SheetIconCount();
+            const s32 igap = (iw - isz * icount) / (icount - 1);
             const s32 icon_cy = y + isz / 2;
             y += 160;
             const s32 other_label_y = y;
@@ -2897,16 +3447,17 @@ namespace ul::menu::ui {
             }
 
             // Icons: the name shows only under the focused one
-            for(s32 i = 0; i < 4; i++) {
+            for(s32 i = 0; i < icount; i++) {
                 const auto f = (this->sheet_zone == 1) && (this->sheet_icon_sel == i);
+                const auto id = this->SheetIconId(i);
                 const auto cx = ix + i * (isz + igap) + isz / 2;
                 const auto cy = icon_cy - (f ? 6 : 0);
                 if(!f) {
                     FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(16.0) }, cx - isz / 2, icon_cy - isz / 2, isz, isz, isz / 2);
                 }
-                static const s32 IconMap[4] = { 1, 2, 5, 4 };
-                auto icon = this->sheet_icons[IconMap[i]];
-                const auto danger = (i == 3) && f;
+                static const s32 IconMap[5] = { 1, 2, -1, 5, 4 };
+                auto icon = (id == 2) ? this->guide_icon : this->sheet_icons[IconMap[id]];
+                const auto danger = (id == 4) && f;
                 if(icon != nullptr) {
                     const auto isize = f ? 52 : 46;
                     if(danger) {
@@ -2917,20 +3468,21 @@ namespace ul::menu::ui {
                         SDL_SetTextureColorMod(icon, 0xFF, 0xFF, 0xFF);
                     }
                 }
-                if((i == 2) && this->sheet_bt_connected) {
+                if((id == 3) && this->sheet_bt_connected) {
                     FillRR(drawer, { 0x5B, 0xE3, 0x8A, ca(255.0) }, cx + 24, cy - 32, 14, 14, 7);
                 }
-                if((i == 2) && this->bt_pending) {
+                if((id == 3) && this->bt_pending) {
                     // Working on it: a soft breathing ring
                     const auto p = 0.5 + 0.5 * std::sin(this->fx_time * 6.0);
                     FillRR(drawer, { 0xFF, 0xFF, 0xFF, ca(40.0 + 60.0 * p) }, cx - isz / 2 - 6, icon_cy - isz / 2 - 6, isz + 12, isz + 12, isz / 2 + 6);
                 }
                 if(f) {
                     std::string label;
-                    switch(i) {
+                    switch(id) {
                         case 0: label = nxt::T("album"); break;
                         case 1: label = nxt::T("library"); break;
-                        case 2: label = this->sheet_bt_connected ? this->sheet_bt_name : nxt::T("bt"); break;
+                        case 2: label = nxt::T("guide"); break;
+                        case 3: label = this->sheet_bt_connected ? this->sheet_bt_name : nxt::T("bt"); break;
                         default: label = nxt::T("close"); break;
                     }
                     if(label != this->sheet_icon_label_str) {
@@ -2983,10 +3535,11 @@ namespace ul::menu::ui {
                     hint = nxt::T("h_continue");
                 }
                 else if(this->sheet_zone == 1) {
-                    switch(this->sheet_icon_sel) {
+                    switch(this->SheetIconId(this->sheet_icon_sel)) {
                         case 0: hint = nxt::T("h_album"); break;
                         case 1: hint = nxt::T("h_library"); break;
-                        case 2: hint = this->sheet_bt_connected ? nxt::Sub(nxt::T("h_bt_open_on"), "name", this->sheet_bt_name) : nxt::T("h_bt_open"); break;
+                        case 2: hint = nxt::T("h_guide_open"); break;
+                        case 3: hint = this->sheet_bt_connected ? nxt::Sub(nxt::T("h_bt_open_on"), "name", this->sheet_bt_name) : nxt::T("h_bt_open"); break;
                         default: hint = nxt::T("h_close"); break;
                     }
                 }

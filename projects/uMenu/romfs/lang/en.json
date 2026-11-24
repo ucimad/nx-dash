@@ -372,5 +372,13 @@
     "nx_h_bt_disconnect": "A  Disconnect      B  Back",
     "nx_h_bt_pair": "A  Search for new devices      B  Back",
     "nx_h_bt_failed": "Disconnect them from your phone, then press A again",
-    "nx_h_bt_wait": "Waiting for {name}…      B  Back"
+    "nx_h_bt_wait": "Waiting for {name}…      B  Back",
+    "nx_guide": "Guide",
+    "nx_guide_lang": "en",
+    "nx_g_hint": "A  Show a hint  ·  {b}",
+    "nx_g_more": "A  Next hint  ·  {a} of {b}",
+    "nx_h_guide": "▲▼  Move      L R  Section      B  Back",
+    "nx_h_guide_hint": "A  Hint      ▲▼  Move      L R  Section      B  Back",
+    "nx_h_guide_hide": "A  Hide hints      L R  Section      B  Back",
+    "nx_h_guide_open": "A  Open the guide for this game"
 }
