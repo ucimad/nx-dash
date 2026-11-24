@@ -2499,56 +2499,65 @@ namespace ul::menu::ui {
         if(R_FAILED(util::LoadJSONFromFile(json, path))) {
             return;
         }
-        try {
-            auto lang = nxt::T("guide_lang");
-            if(!json.contains(lang)) {
-                lang = "en";
+        // No exceptions in this build: check every type before reading it
+        const auto str = [](const util::JSON &o, const char *key) -> std::string {
+            if(o.is_object() && o.contains(key) && o[key].is_string()) {
+                return o[key].get<std::string>();
             }
-            if(!json.contains(lang) || !json[lang].is_object()) {
-                return;
-            }
-            const auto &g = json[lang];
-            this->guide_status = g.value("status", "");
-            if(g.contains("stats") && g["stats"].is_array()) {
-                for(const auto &st : g["stats"]) {
-                    std::vector<std::string> v;
-                    for(const auto &x : st) {
-                        v.push_back(x.get<std::string>());
-                    }
-                    v.resize(3);
-                    this->guide_stats.push_back(v);
-                    if(this->guide_stats.size() >= 4) {
-                        break;
-                    }
+            return "";
+        };
+        auto lang = nxt::T("guide_lang");
+        if(!json.is_object() || !json.contains(lang) || !json[lang].is_object()) {
+            lang = "en";
+        }
+        if(!json.is_object() || !json.contains(lang) || !json[lang].is_object()) {
+            return;
+        }
+        const auto &g = json[lang];
+        this->guide_status = str(g, "status");
+        if(g.contains("stats") && g["stats"].is_array()) {
+            for(const auto &st : g["stats"]) {
+                if(!st.is_array()) {
+                    continue;
                 }
-            }
-            if(g.contains("tabs") && g["tabs"].is_array()) {
-                for(const auto &t : g["tabs"]) {
-                    GuideTab tab;
-                    tab.title = t.value("title", "");
-                    if(t.contains("rows") && t["rows"].is_array()) {
-                        for(const auto &r : t["rows"]) {
-                            GuideRow row;
-                            row.text = r.value("text", "");
-                            row.sub = r.value("sub", "");
-                            row.zone = r.value("zone", "");
-                            row.mark = r.value("mark", "");
-                            if(r.contains("hints") && r["hints"].is_array()) {
-                                for(const auto &h : r["hints"]) {
-                                    row.hints.push_back(h.get<std::string>());
-                                }
-                            }
-                            tab.rows.push_back(row);
-                        }
-                    }
-                    if(!tab.rows.empty()) {
-                        this->guide_tabs.push_back(tab);
-                    }
+                std::vector<std::string> v;
+                for(const auto &x : st) {
+                    v.push_back(x.is_string() ? x.get<std::string>() : "");
+                }
+                v.resize(3);
+                this->guide_stats.push_back(v);
+                if(this->guide_stats.size() >= 4) {
+                    break;
                 }
             }
         }
-        catch(...) {
-            this->guide_tabs.clear();
+        if(g.contains("tabs") && g["tabs"].is_array()) {
+            for(const auto &t : g["tabs"]) {
+                GuideTab tab;
+                tab.title = str(t, "title");
+                if(t.is_object() && t.contains("rows") && t["rows"].is_array()) {
+                    for(const auto &r : t["rows"]) {
+                        GuideRow row;
+                        row.text = str(r, "text");
+                        row.sub = str(r, "sub");
+                        row.zone = str(r, "zone");
+                        row.mark = str(r, "mark");
+                        if(r.is_object() && r.contains("hints") && r["hints"].is_array()) {
+                            for(const auto &h : r["hints"]) {
+                                if(h.is_string()) {
+                                    row.hints.push_back(h.get<std::string>());
+                                }
+                            }
+                        }
+                        if(!row.text.empty()) {
+                            tab.rows.push_back(row);
+                        }
+                    }
+                }
+                if(!tab.rows.empty()) {
+                    this->guide_tabs.push_back(tab);
+                }
+            }
         }
         this->guide_avail = !this->guide_tabs.empty();
     }
