@@ -386,5 +386,14 @@
     "nx_g_sync_min": "Partida leída hace {n} min",
     "nx_g_sync_hours": "Partida leída hace {n} h",
     "nx_g_sync_days": "Partida leída hace {n} d",
-    "nx_g_sync_locked": "Cerrá el juego para leer tu partida"
+    "nx_g_sync_locked": "Cerrá el juego para leer tu partida",
+    "nx_g_k_hint": "A  Pista",
+    "nx_g_k_hide": "A  Ocultar pistas",
+    "nx_g_k_mark": "X  Marcar hecho",
+    "nx_g_k_unmark": "X  Desmarcar",
+    "nx_g_k_move": "▲▼  Mover",
+    "nx_g_k_section": "L R  Sección",
+    "nx_g_k_update": "Y  Actualizar",
+    "nx_g_k_back": "B  Volver",
+    "nx_g_manual": "Marcá con X lo que ya hiciste"
 }

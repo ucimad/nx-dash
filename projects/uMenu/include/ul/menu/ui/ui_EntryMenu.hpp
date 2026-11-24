@@ -499,6 +499,8 @@ namespace ul::menu::ui {
                 std::string zone;
                 std::string mark;
                 std::vector<std::string> hints;
+                std::string id;
+                bool manual = false;
             };
             struct GuideTab {
                 std::string title;
@@ -516,6 +518,10 @@ namespace ul::menu::ui {
             std::vector<GuideTab> guide_tabs;
             bool sheet_guide_open = false;
             bool guide_sync_failed = false;
+            bool guide_has_save = false;
+            std::vector<std::string> guide_checks;
+            std::string guide_hint_line;
+            void GuideToggleCheck();
             std::string guide_sync_str;
             s32 guide_tab = 0;
             s32 guide_sel = 0;
@@ -553,7 +559,7 @@ namespace ul::menu::ui {
             void GuideFreeRows();
             void GuideBuildRows();
             void GuideOpen();
-            void GuideRefresh(const bool keep_place);
+            void GuideRefresh(const bool keep_place, const bool do_sync = true);
             void GuideSetTab(const s32 tab);
             void GuideActivate();
             void GuideInput(const u64 keys_down);

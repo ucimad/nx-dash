@@ -2732,6 +2732,10 @@ namespace ul::menu::ui {
         if(R_FAILED(util::LoadJSONFromFile(guide, GuidePath(app_id, ".json")))) {
             return false;
         }
+        if(!guide.is_object() || !guide.contains("save_slot") || !guide["save_slot"].is_string()) {
+            // Guides you tick by hand: nothing to read
+            return false;
+        }
         const auto uid = g_GlobalSettings.system_status.selected_user;
         if(!accountUidIsValid(&uid)) {
             return false;
@@ -2754,7 +2758,7 @@ namespace ul::menu::ui {
         // Read every slot (user1..user4.dat) and keep the one with the most play time
         util::JSON best;
         double best_time = -1.0;
-        const auto slot_fmt = guide.contains("save_slot") && guide["save_slot"].is_string() ? guide["save_slot"].get<std::string>() : std::string("/user%d.dat");
+        const auto slot_fmt = guide["save_slot"].get<std::string>();
         for(s32 i = 1; i <= 4; i++) {
             char fpath[FS_MAX_PATH] = {};
             snprintf(fpath, sizeof(fpath), slot_fmt.c_str(), i);
@@ -2820,6 +2824,22 @@ namespace ul::menu::ui {
         if(R_FAILED(util::LoadJSONFromFile(json, GuidePath(app_id, ".json"))) || !json.is_object()) {
             return;
         }
+        this->guide_has_save = json.contains("save_slot") && json["save_slot"].is_string();
+        // Steps you ticked yourself with X
+        this->guide_checks.clear();
+        {
+            util::JSON checks;
+            if(R_SUCCEEDED(util::LoadJSONFromFile(checks, GuidePath(app_id, ".checks.json"))) && checks.is_array()) {
+                for(const auto &c : checks) {
+                    if(c.is_string()) {
+                        this->guide_checks.push_back(c.get<std::string>());
+                    }
+                }
+            }
+        }
+        const auto is_checked = [&](const std::string &id) {
+            return std::find(this->guide_checks.begin(), this->guide_checks.end(), id) != this->guide_checks.end();
+        };
         // What we last read from the save (may be missing: then templates show "?" and nothing is ticked)
         util::JSON progress;
         const auto has_progress = R_SUCCEEDED(util::LoadJSONFromFile(progress, GuidePath(app_id, ".progress.json"))) && progress.is_object() && progress.contains("v") && progress["v"].is_object();
@@ -2908,10 +2928,14 @@ namespace ul::menu::ui {
             }
         }
         if(g.contains("tabs") && g["tabs"].is_array()) {
+            s32 tab_i = -1;
             for(const auto &t : g["tabs"]) {
+                tab_i++;
                 if(cond_true(t, "show") == 0) {
                     continue;
                 }
+                const auto tab_manual = t.is_object() && t.contains("manual") && t["manual"].is_boolean() && t["manual"].get<bool>();
+                s32 row_i = -1;
                 GuideTab tab;
                 tab.title = str(t, "title");
                 const auto is_path = t.is_object() && t.contains("path") && t["path"].is_boolean() && t["path"].get<bool>();
@@ -2920,6 +2944,7 @@ namespace ul::menu::ui {
                 auto here_set = false;
                 if(t.is_object() && t.contains("rows") && t["rows"].is_array()) {
                     for(const auto &r : t["rows"]) {
+                        row_i++;
                         if(cond_true(r, "hide") == 1) {
                             continue;
                         }
@@ -2938,7 +2963,12 @@ namespace ul::menu::ui {
                         if(row.text.empty()) {
                             continue;
                         }
-                        const auto done = cond_true(r, "done");
+                        row.id = (r.is_object() && r.contains("id") && r["id"].is_string()) ? r["id"].get<std::string>() : ("t" + std::to_string(tab_i) + "r" + std::to_string(row_i));
+                        row.manual = (tab_manual || (r.is_object() && r.contains("check") && r["check"].is_boolean() && r["check"].get<bool>())) && !(r.is_object() && r.contains("done"));
+                        auto done = cond_true(r, "done");
+                        if(row.manual) {
+                            done = is_checked(row.id) ? 1 : 0;
+                        }
                         if(done == 1) {
                             row.mark = "done";
                         }
@@ -3052,16 +3082,46 @@ namespace ul::menu::ui {
         this->guide_built_tab = this->guide_tab;
     }
 
-    void EntryMenu::GuideRefresh(const bool keep_place) {
+    void EntryMenu::GuideToggleCheck() {
+        if((this->guide_tab < 0) || (this->guide_tab >= (s32)this->guide_tabs.size())) {
+            return;
+        }
+        const auto &rows = this->guide_tabs.at(this->guide_tab).rows;
+        if((this->guide_sel < 0) || (this->guide_sel >= (s32)rows.size()) || !rows.at(this->guide_sel).manual) {
+            this->NxSfx(1);
+            this->Haptic(0.3f, 120.0f, 0.03);
+            return;
+        }
+        const auto id = rows.at(this->guide_sel).id;
+        const auto it = std::find(this->guide_checks.begin(), this->guide_checks.end(), id);
+        const auto now_done = it == this->guide_checks.end();
+        if(now_done) {
+            this->guide_checks.push_back(id);
+        }
+        else {
+            this->guide_checks.erase(it);
+        }
+        util::JSON arr = util::JSON::array();
+        for(const auto &c : this->guide_checks) {
+            arr.push_back(c);
+        }
+        util::SaveJSON(GuidePath(g_GlobalSettings.system_status.suspended_app_id, ".checks.json"), arr);
+        this->GuideRefresh(true, false);
+        this->NxSfx(now_done ? 2 : 0);
+        this->Haptic(now_done ? 0.3f : 0.18f, 160.0f, 0.03);
+    }
+
+    void EntryMenu::GuideRefresh(const bool keep_place, const bool do_sync) {
         const auto app_id = g_GlobalSettings.system_status.suspended_app_id;
-        this->guide_sync_failed = !NxGuideSync(app_id);
+        const auto synced = do_sync ? NxGuideSync(app_id) : !this->guide_sync_failed;
         const auto tab = this->guide_tab;
         const auto sel = this->guide_sel;
         this->GuideLoad(app_id);
+        this->guide_sync_failed = this->guide_has_save && !synced;
         if(keep_place && this->guide_avail) {
             this->GuideFreeTextures();
             this->guide_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("guide"));
-            const auto line = this->guide_sync_failed ? nxt::T("g_sync_locked") : this->guide_sync_str;
+            const auto line = !this->guide_has_save ? nxt::T("g_manual") : (this->guide_sync_failed ? nxt::T("g_sync_locked") : this->guide_sync_str);
             if(!line.empty()) {
                 this->guide_game_tex = Text(pu::ui::DefaultFontSize::Small, line);
             }
@@ -3102,7 +3162,10 @@ namespace ul::menu::ui {
         this->guide_title_tex = Text(pu::ui::DefaultFontSize::MediumLarge, nxt::T("guide"));
         {
             std::string line = this->guide_sync_str;
-            if(this->guide_sync_failed) {
+            if(!this->guide_has_save) {
+                line = nxt::T("g_manual");
+            }
+            else if(this->guide_sync_failed) {
                 line = nxt::T("g_sync_locked");
             }
             if(!line.empty()) {
@@ -3169,7 +3232,11 @@ namespace ul::menu::ui {
             this->NxSfx(1);
             return;
         }
-        if(keys_down & HidNpadButton_Y) {
+        if(keys_down & HidNpadButton_X) {
+            this->GuideToggleCheck();
+            return;
+        }
+        if((keys_down & HidNpadButton_Y) && this->guide_has_save) {
             this->GuideRefresh(true);
             this->NxSfx(this->guide_sync_failed ? 1 : 2);
             this->Haptic(0.25f, 160.0f, 0.03);
@@ -3410,15 +3477,23 @@ namespace ul::menu::ui {
         // One line: what the buttons do here
         {
             const auto &rt = this->guide_row_texs.at(this->guide_sel);
+            const auto &row = rows.at(this->guide_sel);
+            std::vector<std::string> parts;
+            if(!rt.hints.empty()) {
+                parts.push_back(nxt::T((this->guide_rev.at(this->guide_sel) >= (s32)rt.hints.size()) ? "g_k_hide" : "g_k_hint"));
+            }
+            if(row.manual) {
+                parts.push_back(nxt::T((row.mark == "done") ? "g_k_unmark" : "g_k_mark"));
+            }
+            parts.push_back(nxt::T("g_k_move"));
+            parts.push_back(nxt::T("g_k_section"));
+            if(this->guide_has_save) {
+                parts.push_back(nxt::T("g_k_update"));
+            }
+            parts.push_back(nxt::T("g_k_back"));
             std::string hint;
-            if(rt.hints.empty()) {
-                hint = nxt::T("h_guide");
-            }
-            else if(this->guide_rev.at(this->guide_sel) >= (s32)rt.hints.size()) {
-                hint = nxt::T("h_guide_hide");
-            }
-            else {
-                hint = nxt::T("h_guide_hint");
+            for(const auto &p : parts) {
+                hint += (hint.empty() ? "" : "      ") + p;
             }
             if(hint != this->sheet_hint_str) {
                 this->sheet_hint_str = hint;

@@ -386,5 +386,14 @@
     "nx_g_sync_min": "Save read {n} min ago",
     "nx_g_sync_hours": "Save read {n} h ago",
     "nx_g_sync_days": "Save read {n} d ago",
-    "nx_g_sync_locked": "Close the game to read your save"
+    "nx_g_sync_locked": "Close the game to read your save",
+    "nx_g_k_hint": "A  Hint",
+    "nx_g_k_hide": "A  Hide hints",
+    "nx_g_k_mark": "X  Mark done",
+    "nx_g_k_unmark": "X  Unmark",
+    "nx_g_k_move": "▲▼  Move",
+    "nx_g_k_section": "L R  Section",
+    "nx_g_k_update": "Y  Update",
+    "nx_g_k_back": "B  Back",
+    "nx_g_manual": "Tick what you've done with X"
 }
